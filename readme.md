@@ -4,11 +4,11 @@
 The Pastel Mining Nonce Validator API is designed to provide a robust and efficient way to sign and validate proposed mined blocks and mining shares on the Pastel Blockchain. This API is an essential component of the Pastel network, ensuring the integrity and reliability of mining operations.
 
 ## Features
-- **Nonce Signing**: Allows signing of nonces with PastelIDs corresponding to the active supernodes in the network.
-- **Nonce Validation**: Validates the signed nonces to ensure authenticity and integrity.
-- **API Key Authentication**: Secured endpoints with API key authentication for enhanced security.
-- **Supernode Status Check**: Verifies the status of supernodes before signing to ensure only active supernodes participate in the process.
-- **Database Integration**: Stores signed nonces along with their metadata in a database for audit and tracking purposes.
+- **Round-Robin Supernode Selection**: Implements a round-robin approach to select active supernodes for nonce signing, enhancing fairness and decentralization.
+- **Nonce Signing**: Allows signing of nonces with PastelIDs, with each active supernode having an equal opportunity to sign blocks over time.
+- **Nonce Validation**: Validates the signed nonces to ensure authenticity and consistency.
+- **API Key Authentication**: Secures endpoints with API key authentication for enhanced security.
+- **Database Integration**: Stores signed nonces along with their metadata in a database for auditing and tracking purposes.
 
 ## Getting Started
 
@@ -74,7 +74,7 @@ The Pastel Mining Nonce Validator API is designed to provide a robust and effici
 
 ## API Endpoints
 - `GET /list_pastelids`: Lists all the PastelIDs.
-- `POST /sign_nonce`: Accepts a nonce for signing and returns the signed data.
+- `POST /sign_nonce`: Accepts a nonce, selects a supernode based on round-robin logic, and returns the signed data.
 
 ## Database Schema
 - The API uses the `SignedNonce` model to store data in the database.
