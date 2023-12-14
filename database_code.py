@@ -6,6 +6,8 @@ from sqlalchemy import Column, String, DateTime, JSON, LargeBinary, Integer, tex
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker, declarative_base
 from decouple import Config as DecoupleConfig
+from pydantic import BaseModel
+from typing import List, Optional
 
 config = DecoupleConfig(".env")
 DATABASE_URL_FOR_SQLITE = config.get("DATABASE_URL_FOR_SQLITE", cast=str, default="sqlite+aiosqlite:///pastel_mining_block_supernode_validator_api.sqlite")
@@ -20,7 +22,48 @@ class SignedPayload(Base):
     block_signature_payload = Column(JSON, nullable=False)
     datetime_signed = Column(DateTime, default=datetime.utcnow, index=True)
     requesting_machine_ip_address = Column(String, nullable=False)
+    
+class SignedPayloadResponse(BaseModel):
+    id: int
+    payload_string: str
+    payload_bytes: bytes
+    block_signature_payload: dict
+    datetime_signed: datetime
+    requesting_machine_ip_address: str
+    @classmethod
+    def from_orm(cls, model: SignedPayload):
+        """
+        Convert SignedPayload ORM model to Pydantic model.
+        """
+        return cls(
+            id=model.id,
+            payload_string=model.payload_string,
+            payload_bytes=model.payload_bytes,
+            block_signature_payload=model.block_signature_payload,
+            datetime_signed=model.datetime_signed,
+            requesting_machine_ip_address=model.requesting_machine_ip_address
+        )
+    
+class BlockHeaderValidationInfo(BaseModel):
+    supernode_pastelid_pubkey: str
+    supernode_signature: str
 
+class SupernodeEligibilityResponse(BaseModel):
+    is_eligible: bool
+    signing_data: List[dict]
+    current_block_height: int
+    current_number_of_enabled_supernodes: int
+    last_signed_block_height: Optional[int] = None
+    last_signed_block_hash: Optional[str] = None
+    blocks_since_last_signed: Optional[int] = None
+    blocks_until_eligibility_restored : int = 0
+
+class SignPayloadResponse(BaseModel):
+    payload_value: str
+    pastelid: str
+    signature: str
+    utc_timestamp: str
+    
 def to_serializable(val):
     if isinstance(val, datetime):
         return val.isoformat()

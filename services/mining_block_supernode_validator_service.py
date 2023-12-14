@@ -24,6 +24,7 @@ except ImportError:
     import urlparse
 logger = setup_logger()
 
+block_data_cache = {}
 number_of_cpus = os.cpu_count()
 my_os = platform.system()
 loop = asyncio.get_event_loop()
@@ -334,6 +335,86 @@ def safe_json_loads_func(json_string: str) -> dict:
         loaded_json = dirtyjson.loads(json_string.replace('\\"', '"').replace('\/', '/').replace('\\n', ' '))
         return loaded_json
 
+async def get_block_data(block_height_or_hash):
+    global block_data_cache
+    if block_height_or_hash in block_data_cache:  # Check if data is in cache
+        return block_data_cache[block_height_or_hash]
+    block_data = await rpc_connection.getblockheader(block_height_or_hash) # Data not in cache, make RPC call
+    block_data_cache[block_height_or_hash] = block_data  # Store data in cache for future use
+    return block_data
+
+async def check_block_header_for_supernode_validation_info(block_height_or_hash):
+    global rpc_connection
+    try: # Determine if the input is a block height (integer) or a block hash (string)
+        if isinstance(block_height_or_hash, int) or (isinstance(block_height_or_hash, str) and block_height_or_hash.isdigit()):
+            block_height = int(block_height_or_hash)  # Input is a block height
+            block_hash = await rpc_connection.getblockhash(block_height)
+        else:  # Input is assumed to be a block hash
+            block_hash = block_height_or_hash
+        block_header = await get_block_data(block_hash)  # Use caching function to fetch the block header
+        if len(block_header) > 140: # Check if the block header has extra data beyond 140 bytes
+            extra_data = block_header[140:].decode('utf-8') # Extract and decode the data
+            parts = extra_data.split('|') # Attempt to split the data into supernode_pastelid_pubkey and supernode_signature
+            if len(parts) == 2:
+                supernode_pastelid_pubkey = parts[0]
+                supernode_signature = parts[1]
+            else: # Handle the case where there is no delimiter
+                pubkey_length = 86 # len("jXYmHy1uLXuyaKq1YmkFPXd47i3jhqn7b4t7ytNvQr9xQyhyPVaKiQqBu4Knhcp3K9CHKPStWHbEEZLJjCTCzG")
+                supernode_pastelid_pubkey = extra_data[:pubkey_length]
+                supernode_signature = extra_data[pubkey_length:]
+            return supernode_pastelid_pubkey, supernode_signature
+        else: # No extra data beyond 140 bytes
+            return "", ""
+    except Exception as e:
+        logger.error(f"Error in check_block_header_for_supernode_validation_info: {e}")
+        return "", ""
+
+async def check_if_supernode_is_eligible_to_sign_block(supernode_pastelid_pubkey):
+    # Get the supernode list
+    supernode_list_json = await check_supernode_list_func()
+    supernode_list_df = pd.read_json(supernode_list_json, orient='index')
+    # Count the number of ENABLED supernodes
+    enabled_supernodes = supernode_list_df[supernode_list_df['supernode_status'] == 'ENABLED']
+    current_number_of_enabled_supernodes = len(enabled_supernodes)
+    # Initialize a list to store results
+    signing_data_list = []
+    # Fetch current block height
+    current_block_height = await get_current_pastel_block_height_func()
+    # Iterate over the past 'current_number_of_enabled_supernodes' blocks
+    for height in range(current_block_height - current_number_of_enabled_supernodes, current_block_height):
+        pubkey, signature = await check_block_header_for_supernode_validation_info(height)
+        signing_data_list.append({'block_height': height, 'supernode_pastelid_pubkey': pubkey, 'supernode_signature': signature})
+    # Convert the list to DataFrame
+    signing_data = pd.DataFrame(signing_data_list)
+    # Check if the provided pubkey has signed any of the past blocks
+    is_eligible = supernode_pastelid_pubkey in signing_data['supernode_pastelid_pubkey'].values
+    # Convert DataFrame to a list of dictionaries
+    signing_data_list = signing_data.to_dict(orient='records')
+    # Check if the provided pubkey has signed any of the past blocks
+    is_eligible = supernode_pastelid_pubkey in signing_data['supernode_pastelid_pubkey'].values
+    # Check if the provided pubkey has signed any of the past blocks
+    is_eligible = supernode_pastelid_pubkey not in signing_data['supernode_pastelid_pubkey'].values
+    # Find the last block signed by the supernode
+    last_signed = signing_data[signing_data['supernode_pastelid_pubkey'] == supernode_pastelid_pubkey].tail(1)
+    last_signed_block_height = last_signed['block_height'].iloc[0] if not last_signed.empty else 0
+    last_signed_block_hash = await rpc_connection.getblockhash(last_signed_block_height) if last_signed_block_height > 0 else ''
+    # Calculate blocks_since_last_signed
+    blocks_since_last_signed = current_block_height - last_signed_block_height if last_signed_block_height > 0 else 0
+    # Calculate supernode_is_eligible_again_in_n_blocks
+    blocks_until_eligibility_restored  = current_number_of_enabled_supernodes - blocks_since_last_signed if not is_eligible else 0
+    # Prepare the response
+    return {
+        "is_eligible": is_eligible,
+        "signing_data": signing_data_list,
+        "current_block_height": current_block_height,
+        "current_number_of_enabled_supernodes": current_number_of_enabled_supernodes,
+        "last_signed_block_height": last_signed_block_height,
+        "last_signed_block_hash": last_signed_block_hash,
+        "blocks_since_last_signed": blocks_since_last_signed,
+        "blocks_until_eligibility_restored ": blocks_until_eligibility_restored 
+    }    
+    
+    
 #Misc helper functions:
 class MyTimer():
     def __init__(self):
