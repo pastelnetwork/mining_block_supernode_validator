@@ -51,7 +51,7 @@ except (FileNotFoundError, yaml.YAMLError) as e:
     pastelid_secrets_dict = {}
 
 async def verify_token(api_key: str = Depends(api_key_header_auth)):
-    if api_key != f"Bearer {EXPECTED_AUTH_TOKEN}":
+    if api_key != EXPECTED_AUTH_TOKEN:
         raise HTTPException(status_code=401, detail="Unauthorized")
     return api_key
 
@@ -61,13 +61,14 @@ async def list_pastelids(token: str = Depends(verify_token)) -> List[str]:
     logger.info("List of PastelIDs requested")
     return pastelids
 
+
 @app.post("/sign_payload")
-async def sign_payload([payload]: str, request: Request, db: AsyncSession = Depends(get_db), token: str = Depends(api_key_header_auth)):
+async def sign_payload(payload: str, request: Request, db: AsyncSession = Depends(get_db), token: str = Depends(api_key_header_auth)):
     block_signature_payload = {"payload_value": payload}
     current_supernode_json = await check_supernode_list_func()
     current_supernode_dict = json.loads(current_supernode_json)
-    for _ in range(len(pastelid_secrets_dict)): # Attempt to sign with each supernode until successful or all are tried
-        selected_supernode_name, credentials = next(supernode_iterator)  # Select the next supernode for signing
+    for _ in range(len(pastelid_secrets_dict)):
+        selected_supernode_name, credentials = next(supernode_iterator)
         pastelid = credentials["pastelid"]
         supernode_entry = next((node for key, node in current_supernode_dict.items() if node.get("extKey") == pastelid), None)
         if supernode_entry and supernode_entry.get("supernode_status") == "ENABLED":
@@ -77,7 +78,7 @@ async def sign_payload([payload]: str, request: Request, db: AsyncSession = Depe
                 signature = await sign_message_with_pastelid_func(pastelid, message_to_sign, passphrase)
                 message_to_verify = payload
                 pastelid_signature_on_message = signature
-                verification_result = await verify_message_with_pastelid_func(pastelid, message_to_verify, pastelid_signature_on_message)                
+                verification_result = await verify_message_with_pastelid_func(pastelid, message_to_verify, pastelid_signature_on_message)
                 block_signature_payload["pastelid"] = pastelid
                 block_signature_payload["signature"] = signature
                 block_signature_payload["utc_timestamp"] = str(datetime.utcnow())

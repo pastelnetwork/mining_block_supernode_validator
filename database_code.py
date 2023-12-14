@@ -17,7 +17,7 @@ class SignedPayload(Base):
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
     payload_string = Column(String, index=True)
     payload_bytes = Column(LargeBinary, nullable=False)
-    payload_signature = Column(JSON, nullable=False)
+    block_signature_payload = Column(JSON, nullable=False)
     datetime_signed = Column(DateTime, default=datetime.utcnow, index=True)
     requesting_machine_ip_address = Column(String, nullable=False)
 
@@ -83,7 +83,7 @@ async def get_db():
         yield db
         await db.commit()
     except Exception as e:
-        tb_str = traceback.format_exception(etype=type(e), value=e, tb=e.__traceback__)
+        tb_str = traceback.format_exception(type(e), e, e.__traceback__)
         tb_str = "".join(tb_str)        
         logger.error(f"Database Error: {e}\nFull Traceback:\n{tb_str}")
         await db.rollback()
