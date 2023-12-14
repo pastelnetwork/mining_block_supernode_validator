@@ -1,14 +1,14 @@
-# Pastel Mining Nonce Validator API
+# Pastel Mining Block Supernode Validator API
 
 ## Overview
-The Pastel Mining Nonce Validator API is designed to provide a robust and efficient way to sign and validate proposed mined blocks and mining shares on the Pastel Blockchain. This API is an essential component of the Pastel network, ensuring the integrity and reliability of mining operations.
+The Pastel Mining Block Supernode Validator API is designed to provide a robust and efficient way to sign and validate proposed mined blocks and mining shares on the Pastel Blockchain. This API is an essential component of the Pastel network, ensuring the integrity and reliability of mining operations.
 
 ## Features
-- **Round-Robin Supernode Selection**: Implements a round-robin approach to select active supernodes for nonce signing, enhancing fairness and decentralization.
-- **Nonce Signing**: Allows signing of nonces with PastelIDs, with each active supernode having an equal opportunity to sign blocks over time.
-- **Nonce Validation**: Validates the signed nonces to ensure authenticity and consistency.
+- **Round-Robin Supernode Selection**: Implements a round-robin approach to select active supernodes for block signing, enhancing fairness and decentralization.
+- **Payload Signing**: Allows signing of payloads with PastelIDs, with each active supernode having an equal opportunity to sign blocks over time.
+- **Signature Validation**: Validates the signed payloads to ensure authenticity and consistency.
 - **API Key Authentication**: Secures endpoints with API key authentication for enhanced security.
-- **Database Integration**: Stores signed nonces along with their metadata in a database for auditing and tracking purposes.
+- **Database Integration**: Stores signed payloads along with their metadata in a database for auditing and tracking purposes.
 
 ## Getting Started
 
@@ -23,11 +23,11 @@ The Pastel Mining Nonce Validator API is designed to provide a robust and effici
 ### Installation
 1. Clone the repository:
    ```bash
-   git clone https://github.com/pastelnetwork/mining_nonce_validator.git
+   git clone https://github.com/pastelnetwork/mining_block_supernode_validator.git
    ```
 2. Navigate to the cloned directory:
    ```bash
-   cd mining_nonce_validator
+   cd mining_block_supernode_validator
    ```
 3. Set up the project:
    ```bash
@@ -74,19 +74,19 @@ The Pastel Mining Nonce Validator API is designed to provide a robust and effici
 
 ## API Endpoints
 - `GET /list_pastelids`: Lists all the PastelIDs.
-- `POST /sign_nonce`: Accepts a nonce, selects a supernode based on round-robin logic, and returns the signed data.
+- `POST /sign_payload`: Accepts a payload, selects a supernode based on round-robin logic, and returns the signed data.
 
 ## Database Schema
-- The API uses the `SignedNonce` model to store data in the database.
+- The API uses the `SignedPayload` model to store data in the database.
 
 ## Logging
 - Detailed logging is implemented for tracking and debugging purposes.
 
 ## Contributing
-Contributions to the Pastel Mining Nonce Validator API are welcome. Please read our [contributing guidelines](CONTRIBUTING.md) before submitting your pull requests.
+Contributions to the Pastel Mining Block Supernode Validator API are welcome. Please read our [contributing guidelines](CONTRIBUTING.md) before submitting your pull requests.
 
 ## License
 Distributed under the MIT License. See [LICENSE](LICENSE) for more information.
 
 ## Contact
-- Project Link: [https://github.com/pastelnetwork/mining_nonce_validator](https://github.com/pastelnetwork/mining_nonce_validator)
+- Project Link: [https://github.com/pastelnetwork/mining_block_supernode_validator](https://github.com/pastelnetwork/mining_block_supernode_validator)

@@ -4,7 +4,7 @@ import shutil
 import queue
 from logging.handlers import RotatingFileHandler, QueueHandler, QueueListener
 
-logger = logging.getLogger("pastel_mining_nonce_validator_api")
+logger = logging.getLogger("pastel_mining_block_supernode_validator_api")
 
 def setup_logger():
     if logger.handlers:
@@ -14,7 +14,7 @@ def setup_logger():
         os.makedirs(old_logs_dir)
     logger.setLevel(logging.INFO)
     formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-    log_file_path = 'pastel_mining_nonce_validator_api.log'
+    log_file_path = 'pastel_mining_block_supernode_validator_api.log'
     log_queue = queue.Queue(-1)  # Create a queue for the handlers
     fh = RotatingFileHandler(log_file_path, maxBytes=10*1024*1024, backupCount=5)
     fh.setFormatter(formatter)

@@ -1,4 +1,4 @@
-from database_code import initialize_db, SignedNonce, get_db
+from database_code import initialize_db, SignedPayload, get_db
 from logger_config import setup_logger
 import asyncio
 from fastapi import FastAPI, HTTPException, Depends, Request
@@ -7,7 +7,7 @@ from fastapi.security import APIKeyHeader
 import uvloop
 from uvicorn import Config, Server
 from decouple import Config as DecoupleConfig
-from services.mining_nonce_validator_service import (sign_message_with_pastelid_func, verify_message_with_pastelid_func, check_supernode_list_func)
+from services.mining_block_supernode_validator_service import (sign_message_with_pastelid_func, verify_message_with_pastelid_func, check_supernode_list_func)
 import yaml
 import json
 from typing import List
@@ -15,7 +15,7 @@ import itertools
 from datetime import datetime
 from sqlalchemy.ext.asyncio import AsyncSession
 
-description_string = "🎢 Pastel's Mining Nonce Validator API provides various API endpoints to sign and validate proposed mined blocks and mining shares on the Pastel Blockchain. 💸"
+description_string = "🎢 Pastel's Mining Block Supernode Validator API provides various API endpoints to sign and validate proposed mined blocks and mining shares on the Pastel Blockchain. 💸"
 config = DecoupleConfig(".env")
 UVICORN_PORT = config.get("UVICORN_PORT", cast=int)
 EXPECTED_AUTH_TOKEN = config.get("AUTH_TOKEN", cast=str)
@@ -25,7 +25,7 @@ asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
 supernode_iterator = itertools.cycle([])  # Global round-robin iterator for supernodes
 
 logger = setup_logger()
-app = FastAPI(title="Pastel Mining Nonce Validator API", description=description_string, docs_url="/")
+app = FastAPI(title="Pastel Mining Block Supernode Validator API", description=description_string, docs_url="/")
 
 allow_all = ['*']
 app.add_middleware(
@@ -61,9 +61,9 @@ async def list_pastelids(token: str = Depends(verify_token)) -> List[str]:
     logger.info("List of PastelIDs requested")
     return pastelids
 
-@app.post("/sign_nonce")
-async def sign_nonce(nonce: str, request: Request, db: AsyncSession = Depends(get_db), token: str = Depends(api_key_header_auth)):
-    nonce_signature_payload = {"nonce_value": nonce}
+@app.post("/sign_payload")
+async def sign_payload([payload]: str, request: Request, db: AsyncSession = Depends(get_db), token: str = Depends(api_key_header_auth)):
+    block_signature_payload = {"payload_value": payload}
     current_supernode_json = await check_supernode_list_func()
     current_supernode_dict = json.loads(current_supernode_json)
     for _ in range(len(pastelid_secrets_dict)): # Attempt to sign with each supernode until successful or all are tried
@@ -72,28 +72,28 @@ async def sign_nonce(nonce: str, request: Request, db: AsyncSession = Depends(ge
         supernode_entry = next((node for key, node in current_supernode_dict.items() if node.get("extKey") == pastelid), None)
         if supernode_entry and supernode_entry.get("supernode_status") == "ENABLED":
             passphrase = credentials["pwd"]
-            message_to_sign = nonce
+            message_to_sign = payload
             try:
                 signature = await sign_message_with_pastelid_func(pastelid, message_to_sign, passphrase)
-                message_to_verify = nonce
+                message_to_verify = payload
                 pastelid_signature_on_message = signature
                 verification_result = await verify_message_with_pastelid_func(pastelid, message_to_verify, pastelid_signature_on_message)                
-                nonce_signature_payload["pastelid"] = pastelid
-                nonce_signature_payload["signature"] = signature
-                nonce_signature_payload["utc_timestamp"] = str(datetime.utcnow())
-                logger.info(f"Signed nonce for {selected_supernode_name} with PastelID {pastelid} and verified it: {verification_result}")
-                new_signed_nonce = SignedNonce(
-                    nonce_string=nonce,
-                    nonce_bytes=nonce.encode(),
-                    nonce_signature_payload=nonce_signature_payload,
+                block_signature_payload["pastelid"] = pastelid
+                block_signature_payload["signature"] = signature
+                block_signature_payload["utc_timestamp"] = str(datetime.utcnow())
+                logger.info(f"Signed payload for {selected_supernode_name} with PastelID {pastelid} and verified it: {verification_result}")
+                new_signed_payload = SignedPayload(
+                    payload_string=payload,
+                    payload_bytes=payload.encode(),
+                    block_signature_payload=block_signature_payload,
                     requesting_machine_ip_address=request.client.host
                 )
-                db.add(new_signed_nonce)
+                db.add(new_signed_payload)
                 await db.commit()               
-                return nonce_signature_payload
+                return block_signature_payload
             except Exception as e:
-                logger.error(f"Error signing nonce with PastelID {pastelid}: {e}; trying next supernode.")
-    raise HTTPException(status_code=500, detail="Unable to sign nonce with any supernode")
+                logger.error(f"Error signing payload with PastelID {pastelid}: {e}; trying next supernode.")
+    raise HTTPException(status_code=500, detail="Unable to sign payload with any supernode")
 
 @app.on_event("startup")
 async def startup_event():

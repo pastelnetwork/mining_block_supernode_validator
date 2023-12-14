@@ -8,16 +8,16 @@ from sqlalchemy.orm import sessionmaker, declarative_base
 from decouple import Config as DecoupleConfig
 
 config = DecoupleConfig(".env")
-DATABASE_URL_FOR_SQLITE = config.get("DATABASE_URL_FOR_SQLITE", cast=str, default="sqlite+aiosqlite:///pastel_mining_nonce_validator_api.sqlite")
+DATABASE_URL_FOR_SQLITE = config.get("DATABASE_URL_FOR_SQLITE", cast=str, default="sqlite+aiosqlite:///pastel_mining_block_supernode_validator_api.sqlite")
 logger = setup_logger()
 Base = declarative_base()
 
-class SignedNonce(Base): 
-    __tablename__ = 'signed_nonce'
+class SignedPayload(Base): 
+    __tablename__ = 'signed_payload'
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
-    nonce_string = Column(String, index=True)
-    nonce_bytes = Column(LargeBinary, nullable=False)
-    nonce_signature_payload = Column(JSON, nullable=False)
+    payload_string = Column(String, index=True)
+    payload_bytes = Column(LargeBinary, nullable=False)
+    payload_signature = Column(JSON, nullable=False)
     datetime_signed = Column(DateTime, default=datetime.utcnow, index=True)
     requesting_machine_ip_address = Column(String, nullable=False)
 
@@ -39,7 +39,7 @@ def to_dict(self):
                 d[column.name] = serialized_value if serialized_value is not None else value
     return d
 
-SignedNonce.to_dict = to_dict
+SignedPayload.to_dict = to_dict
 
 engine = create_async_engine(DATABASE_URL_FOR_SQLITE, echo=False, connect_args={"check_same_thread": False})
     
