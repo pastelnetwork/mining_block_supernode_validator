@@ -27,9 +27,12 @@ class SignedPayloadResponse(BaseModel):
     id: int
     payload_string: str
     payload_bytes: bytes
-    block_signature_payload: dict
-    datetime_signed: datetime
+    pastelid: str
+    signature: str
+    utc_timestamp: str
+    datetime_signed: str
     requesting_machine_ip_address: str
+
     @classmethod
     def from_orm(cls, model: SignedPayload):
         """
@@ -39,11 +42,13 @@ class SignedPayloadResponse(BaseModel):
             id=model.id,
             payload_string=model.payload_string,
             payload_bytes=model.payload_bytes,
-            block_signature_payload=model.block_signature_payload,
-            datetime_signed=model.datetime_signed,
+            pastelid=model.block_signature_payload.get('pastelid', ''),
+            signature=model.block_signature_payload.get('signature', ''),
+            utc_timestamp=model.block_signature_payload.get('utc_timestamp', ''),
+            datetime_signed=model.datetime_signed.isoformat(),
             requesting_machine_ip_address=model.requesting_machine_ip_address
         )
-    
+
 class BlockHeaderValidationInfo(BaseModel):
     supernode_pastelid_pubkey: str
     supernode_signature: str
@@ -82,6 +87,12 @@ def to_dict(self):
                 d[column.name] = serialized_value if serialized_value is not None else value
     return d
 
+class ValidateSignatureResponse(BaseModel):
+    supernode_pastelid_pubkey: str
+    supernode_pastelid_signature: str
+    signed_data_payload: str
+    is_signature_valid: bool
+    
 SignedPayload.to_dict = to_dict
 
 engine = create_async_engine(DATABASE_URL_FOR_SQLITE, echo=False, connect_args={"check_same_thread": False})
