@@ -201,27 +201,133 @@ class AsyncAuthServiceProxy:
                     'code': -343, 'message': 'missing JSON-RPC result'})
             else:
                 return response_json['result']
+
+async def check_network_quality(rpc_connection):
+    peer_info = await rpc_connection.getpeerinfo()
+    latency_list = [peer['pingtime'] for peer in peer_info if 'pingtime' in peer]
+    if not latency_list:
+        return False
+    average_latency = sum(latency_list) / len(latency_list)
+    # A good threshold for latency might be 5 second
+    return average_latency < 5.0
+
+async def check_peers_quality(rpc_connection):
+    peer_info = await rpc_connection.getpeerinfo()
+    # Check if peers have the same block number for headers and blocks
+    synced_peers = [peer for peer in peer_info if peer.get('synced_headers', -1) == peer.get('synced_blocks', -1)]
+    # Assuming having at least 1 fully synced peers is a good sign
+    return len(synced_peers) >= 1
+
+async def check_timestamp_anomalies(rpc_connection):
+    latest_block_hash = await rpc_connection.getbestblockhash()
+    latest_block_header = await rpc_connection.getblockheader(latest_block_hash)
+    latest_block_time = latest_block_header['time']
+    # Allow a 10-minute window for timestamp discrepancies
+    return abs(time.time() - latest_block_time) < 600  # 10 minutes in seconds
+
+async def check_pending_transactions_pool(rpc_connection):
+    mempool_info = await rpc_connection.getmempoolinfo()
+    # Assuming a mempool size of 1000 transactions is reasonable
+    return mempool_info['size'] < 1000
         
+async def currently_in_initial_sync_period() -> bool:
+    global rpc_connection
+    try:
+        expected_block_time_in_seconds = 2.5 * 60  # 2.5 minutes in seconds
+        number_of_blocks_to_check = 20
+        blockchain_info = await rpc_connection.getblockchaininfo()
+        current_block_height = blockchain_info['blocks']
+        timestamps = []
+        for block_num in range(current_block_height - number_of_blocks_to_check + 1, current_block_height + 1):
+            block_hash = await rpc_connection.getblockhash(block_num)
+            block_header = await rpc_connection.getblockheader(block_hash)
+            timestamps.append(block_header['time'])
+        intervals = [timestamps[i] - timestamps[i - 1] for i in range(1, len(timestamps))]
+        mean_interval = sum(intervals) / len(intervals)
+        return mean_interval < expected_block_time_in_seconds / 2
+    except Exception as e:
+        logger.error(f"Error in currently_in_initial_sync_period: {e}")
+        return False
+
+async def check_if_blockchain_is_fully_synced() -> (bool, str):
+    expected_block_time_in_seconds = 2.5 * 60
+    number_of_past_minutes_to_check_for_new_block = 15
+    reason_for_thinking_we_are_not_fully_synced = ''
+    use_optional_checks = 0
+    global rpc_connection
+    try:
+        blockchain_info = await rpc_connection.getblockchaininfo()
+        # Check if Pasteld is still starting up
+        if blockchain_info['status'] != 'running':
+            reason_for_thinking_we_are_not_fully_synced += 'Pasteld is still starting up. '
+        # Check if Pasteld is in the initial sync period
+        if await currently_in_initial_sync_period():
+            reason_for_thinking_we_are_not_fully_synced += 'Pasteld is in initial sync period. '
+        # Check if there are new blocks in a reasonable time
+        latest_block_time = blockchain_info['mediantime']
+        if time.time() - latest_block_time > (expected_block_time_in_seconds * number_of_past_minutes_to_check_for_new_block):
+            reason_for_thinking_we_are_not_fully_synced += 'No new blocks for a long period. '
+        # Check if there are peer connections
+        if not blockchain_info['connections']:
+            reason_for_thinking_we_are_not_fully_synced += 'No peer connections. '
+        # Check for large chain reorg
+        if 'reorg' in blockchain_info['warnings'].lower():
+            reason_for_thinking_we_are_not_fully_synced += 'Large chain reorg detected. '
+        if use_optional_checks:
+            # Check network quality based on the average latency of peer connections.  A high average latency indicates potential network issues that could affect synchronization.
+            if not await check_network_quality(rpc_connection):
+                reason_for_thinking_we_are_not_fully_synced += 'Network quality is poor. '
+            # Check the quality of peer connections. This ensures there are enough peers that are fully synced. A low number of fully synced peers can hinder proper synchronization with the blockchain network.
+            if not await check_peers_quality(rpc_connection):
+                reason_for_thinking_we_are_not_fully_synced += 'Insufficient quality of peer connections. '
+            # Check for anomalies in the timestamp of the latest block. Significant deviations between the block timestamp and the system time can indicate potential issues with the node's time synchronization.
+            if not await check_timestamp_anomalies(rpc_connection):
+                reason_for_thinking_we_are_not_fully_synced += 'Timestamp anomalies detected. '
+            # Check the size of the pending transactions pool (mempool). An excessively large mempool size might indicate network congestion or issues in processing transactions.
+            if not await check_pending_transactions_pool(rpc_connection):
+                reason_for_thinking_we_are_not_fully_synced += 'Pending transactions pool is too large. '
+        # Determine if fully synced
+        fully_synced = len(reason_for_thinking_we_are_not_fully_synced) == 0
+        return fully_synced, reason_for_thinking_we_are_not_fully_synced.strip()
+    except Exception as e:
+        logger.error(f"Error in check_if_blockchain_is_fully_synced: {e}")
+        return False, f"Error encountered: {e}"
+
 async def get_current_pastel_block_height_func():
     global rpc_connection
-    best_block_hash = await rpc_connection.getbestblockhash()
-    best_block_details = await rpc_connection.getblock(best_block_hash)
-    curent_block_height = best_block_details['height']
-    return curent_block_height
+    fully_synced, reason_for_thinking_we_are_not_fully_synced = await check_if_blockchain_is_fully_synced()
+    if not fully_synced:
+        logger.error(f"Blockchain is not fully synced! Reason: {reason_for_thinking_we_are_not_fully_synced}")
+        return reason_for_thinking_we_are_not_fully_synced
+    else:
+        best_block_hash = await rpc_connection.getbestblockhash()
+        best_block_details = await rpc_connection.getblock(best_block_hash)
+        curent_block_height = best_block_details['height']
+        return curent_block_height
 
 async def get_previous_block_hash_and_merkle_root_func():
     global rpc_connection
-    previous_block_height = await get_current_pastel_block_height_func()
-    previous_block_hash = await rpc_connection.getblockhash(previous_block_height)
-    previous_block_details = await rpc_connection.getblock(previous_block_hash)
-    previous_block_merkle_root = previous_block_details['merkleroot']
-    return previous_block_hash, previous_block_merkle_root, previous_block_height
+    fully_synced, reason_for_thinking_we_are_not_fully_synced = await check_if_blockchain_is_fully_synced()
+    if not fully_synced:
+        logger.error(f"Blockchain is not fully synced! Reason: {reason_for_thinking_we_are_not_fully_synced}")
+        return reason_for_thinking_we_are_not_fully_synced, reason_for_thinking_we_are_not_fully_synced, reason_for_thinking_we_are_not_fully_synced
+    else:    
+        previous_block_height = await get_current_pastel_block_height_func()
+        previous_block_hash = await rpc_connection.getblockhash(previous_block_height)
+        previous_block_details = await rpc_connection.getblock(previous_block_hash)
+        previous_block_merkle_root = previous_block_details['merkleroot']
+        return previous_block_hash, previous_block_merkle_root, previous_block_height
 
 async def get_last_block_data_func():
     global rpc_connection
-    current_block_height = await get_current_pastel_block_height_func()
-    block_data = await rpc_connection.getblock(str(current_block_height))
-    return block_data
+    fully_synced, reason_for_thinking_we_are_not_fully_synced = await check_if_blockchain_is_fully_synced()
+    if not fully_synced:
+        logger.error(f"Blockchain is not fully synced! Reason: {reason_for_thinking_we_are_not_fully_synced}")
+        return reason_for_thinking_we_are_not_fully_synced
+    else:      
+        current_block_height = await get_current_pastel_block_height_func()
+        block_data = await rpc_connection.getblock(str(current_block_height))
+        return block_data
 
 async def check_psl_address_balance_func(address_to_check):
     global rpc_connection

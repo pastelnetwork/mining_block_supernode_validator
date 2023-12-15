@@ -9,14 +9,17 @@ from uvicorn import Config, Server
 from decouple import Config as DecoupleConfig
 from services.mining_block_supernode_validator_service import (sign_message_with_pastelid_func, verify_message_with_pastelid_func, check_supernode_list_func,
                                                             check_block_header_for_supernode_validation_info, check_if_supernode_is_eligible_to_sign_block,
-                                                            get_previous_block_hash_and_merkle_root_func)
+                                                            get_previous_block_hash_and_merkle_root_func, check_if_blockchain_is_fully_synced)
 import yaml
 import json
 import aiofiles
-from typing import List
+from typing import List, Tuple
 import itertools
 from datetime import datetime
 from sqlalchemy.ext.asyncio import AsyncSession
+import httpx
+
+
 
 description_string = "🎢 Pastel's Mining Block Supernode Validator API provides various API endpoints to sign and validate proposed mined blocks and mining shares on the Pastel Blockchain. 💸"
 config = DecoupleConfig(".env")
@@ -67,6 +70,15 @@ async def update_supernode_eligibility():
         logger.info(f"Supernode eligibility cache updated. Elapsed time since last update: {elapsed_seconds:.2f} seconds. Current time: UTC {end_time}")
         await asyncio.sleep(SLEEP_SECONDS_BETWEEN_PASTELID_ELIGIBILITY_CHECKS)
 
+async def get_signature_from_remote_machine(remote_ip, auth_token):
+    url = f"http://{remote_ip}/get_signature_round_robin"
+    headers = {"Authorization": auth_token}
+    async with httpx.AsyncClient() as client:
+        response = await client.get(url, headers=headers)
+        if response.status_code != 200: # Handle non-200 responses appropriately
+            return {"error": f"Received status code {response.status_code}"}
+        return response.json()
+    
 try:
     pastelid_secrets_dict = load_yaml(filepath_to_pastelid_secrets)
 except (FileNotFoundError, yaml.YAMLError) as e:
@@ -175,6 +187,43 @@ async def sign_payload_round_robin_endpoint(request: Request, db: AsyncSession =
                 logger.error(f'Error signing payload with PastelID {pastelid}: {e}')
     raise HTTPException(status_code=500, detail='Unable to sign payload with any supernode')
 
+@app.get("/get_previous_block_merkle_root", response_model=str)
+async def get_previous_block_merkle_root_endpoint(token: str = Depends(verify_token)):
+    """
+    Get the previous Pastel block's Merkle Root.
+    
+    - **token**: Authorization token required.
+    
+    Returns the Merkle Root as a string.
+    """
+    try:
+        previous_block_hash, previous_block_merkle_root, previous_block_height = await get_previous_block_hash_and_merkle_root_func()
+        return previous_block_merkle_root
+    except HTTPException as http_ex:
+        raise http_ex
+    except Exception as e:
+        logger.error(f"Error getting previous block Merkle Root: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+@app.get("/get_merkle_signature_from_remote_machine/{remote_ip}", response_model=dict)
+async def get_merkle_signature_from_remote_machine_endpoint(remote_ip: str, token: str = Depends(verify_token)):
+    """
+    Get a Supernode PastelID signature on the previous Pastel Block's Merkle Root from a remote machine using round-robin selection of eligible PastelIDs.
+
+    - **remote_ip**: IP address of the remote machine.
+    - **token**: Authorization token required.
+    
+    Returns the JSON response from the remote machine, containing signature details.
+    """
+    try:
+        response = await get_signature_from_remote_machine(remote_ip, token)
+        return response
+    except HTTPException as http_ex:
+        raise http_ex
+    except Exception as e:
+        logger.error(f"Error getting signature from remote machine: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
 
 @app.get("/validate_supernode_signature", response_model=ValidateSignatureResponse)
 async def validate_supernode_signature(
@@ -212,6 +261,26 @@ async def validate_supernode_signature(
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
+@app.get("/check_local_blockchain_sync_status", response_model=Tuple[bool, str], responses={200: {"description": "Blockchain sync status"}})
+async def check_local_blockchain_sync_status_endpoint(token: str = Depends(verify_token), use_optional_checks: int = 0):
+    """
+    Check if the blockchain is fully synchronized with the network.
+    
+    - **token**: Authorization token required.
+    - **use_optional_checks**: Flag to indicate whether to run additional network quality and peer checks (0 = No, 1 = Yes).
+    
+    Returns a tuple with a boolean indicating if the blockchain is fully synced and a string providing reasons if it's not fully synced.
+    """
+    try:
+        fully_synced, reasons = await check_if_blockchain_is_fully_synced(use_optional_checks)
+        return fully_synced, reasons
+    except HTTPException as http_ex:
+        raise http_ex
+    except Exception as e:
+        logger.error(f"Error checking blockchain sync status: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+    
+    
 @app.on_event("startup")
 async def startup_event():
     asyncio.create_task(update_supernode_eligibility())  # Start the background task
