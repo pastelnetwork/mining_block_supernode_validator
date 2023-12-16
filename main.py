@@ -9,7 +9,8 @@ from uvicorn import Config, Server
 from decouple import Config as DecoupleConfig
 from services.mining_block_supernode_validator_service import (sign_message_with_pastelid_func, verify_message_with_pastelid_func, check_supernode_list_func,
                                                             check_block_header_for_supernode_validation_info, check_if_supernode_is_eligible_to_sign_block,
-                                                            get_previous_block_hash_and_merkle_root_func, check_if_blockchain_is_fully_synced)
+                                                            get_previous_block_hash_and_merkle_root_func, check_if_blockchain_is_fully_synced,
+                                                            periodic_update_task, update_sync_status_cache, rpc_connection)
 import yaml
 import json
 import aiofiles
@@ -187,6 +188,7 @@ async def sign_payload_round_robin_endpoint(request: Request, db: AsyncSession =
                 logger.error(f'Error signing payload with PastelID {pastelid}: {e}')
     raise HTTPException(status_code=500, detail='Unable to sign payload with any supernode')
 
+
 @app.get("/get_previous_block_merkle_root", response_model=str)
 async def get_previous_block_merkle_root_endpoint(token: str = Depends(verify_token)):
     """
@@ -204,6 +206,7 @@ async def get_previous_block_merkle_root_endpoint(token: str = Depends(verify_to
     except Exception as e:
         logger.error(f"Error getting previous block Merkle Root: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
+
 
 @app.get("/get_merkle_signature_from_remote_machine/{remote_ip}", response_model=dict)
 async def get_merkle_signature_from_remote_machine_endpoint(remote_ip: str, token: str = Depends(verify_token)):
@@ -261,8 +264,8 @@ async def validate_supernode_signature(
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@app.get("/check_local_blockchain_sync_status", response_model=Tuple[bool, str], responses={200: {"description": "Blockchain sync status"}})
-async def check_local_blockchain_sync_status_endpoint(token: str = Depends(verify_token), use_optional_checks: int = 0):
+@app.get("/check_if_blockchain_is_fully_synced", response_model=Tuple[bool, str], responses={200: {"description": "Blockchain sync status"}})
+async def check_if_blockchain_is_fully_synced_endpoint(token: str = Depends(verify_token), use_optional_checks: int = 0):
     """
     Check if the blockchain is fully synchronized with the network.
     
@@ -295,15 +298,22 @@ async def startup_event():
         logger.error(f"Error during startup: {e}")
 
 async def main():
+    update_interval_seconds = 60  # Update every 60 seconds
     uvicorn_config = Config(
         "main:app",
         host="0.0.0.0",
         port=UVICORN_PORT,
         loop="uvloop",
     )
+    # Create the periodic update task
+    update_task = asyncio.create_task(periodic_update_task(rpc_connection, update_interval_seconds))
+        # Start the background task to update sync status
+    sync_check_task = asyncio.create_task(update_sync_status_cache(rpc_connection))
+    # Create the Uvicorn server task
     server = Server(uvicorn_config)
-    await server.serve()
-    
+    server_task = server.serve()
+    # Run both tasks concurrently
+    await asyncio.gather(update_task, sync_check_task, server_task)
 
 if __name__ == "__main__":
     asyncio.run(main())

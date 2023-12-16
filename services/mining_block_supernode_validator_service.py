@@ -35,10 +35,33 @@ if 'Windows' in my_os:
 else:
     parent.nice(19)
 
-USER_AGENT = "AuthServiceProxy/0.1"
-HTTP_TIMEOUT = 180
-active_sessions = {}  # Dictionary to hold active sessions and their last used times
-        
+# Global variable to store recent block hashes
+recent_block_hashes = {}
+# Cache for storing blockchain sync status
+sync_status_cache = {
+    'last_updated': datetime.min,
+    'is_fully_synced': True,
+    'reason': 'Initial sync status'
+}
+
+async def update_sync_status_cache(rpc_connection):
+    global sync_status_cache
+    while True:
+        try:
+            is_synced, reason = await check_if_blockchain_is_fully_synced()
+            sync_status_cache = {
+                'last_updated': datetime.now(),
+                'is_fully_synced': is_synced,
+                'reason': reason
+            }
+        except Exception as e:
+            logger.error(f"Error updating sync status: {e}")
+        await asyncio.sleep(60)  # Update every 60 seconds
+                
+def is_blockchain_fully_synced():
+    global sync_status_cache
+    return sync_status_cache['is_fully_synced'], sync_status_cache['reason']
+                
 class ClientSessionManager:
     def __init__(self, stale_timeout: timedelta = timedelta(minutes=15)):
         self.client_session: Optional[aiohttp.ClientSession] = None
@@ -249,30 +272,68 @@ async def currently_in_initial_sync_period() -> bool:
         logger.error(f"Error in currently_in_initial_sync_period: {e}")
         return False
 
-async def check_if_blockchain_is_fully_synced() -> (bool, str):
+async def update_recent_block_hashes(rpc_connection, number_of_blocks=20):
+    global recent_block_hashes
+    try:
+        blockchain_info = await rpc_connection.getblockchaininfo()
+        current_block_height = blockchain_info['blocks']
+        for block_num in range(max(1, current_block_height - number_of_blocks + 1), current_block_height + 1):
+            block_hash = await rpc_connection.getblockhash(block_num)
+            recent_block_hashes[block_num] = block_hash
+    except Exception as e:
+        logger.error(f"Error in update_recent_block_hashes: {e}")
+
+async def check_for_chain_reorg(rpc_connection):
+    global recent_block_hashes
+    try:
+        reorg_detected = False
+        reorg_depth = 0
+        if len(recent_block_hashes) < 20: # Check if we have enough data for the reorg check
+            logger.info("Not enough data for reorg check, skipping.")
+            return reorg_detected, reorg_depth
+        for height, stored_hash in recent_block_hashes.items():
+            current_hash = await rpc_connection.getblockhash(height)
+            if current_hash != stored_hash:
+                reorg_detected = True
+                reorg_depth = max(reorg_depth, len(recent_block_hashes) - (height - min(recent_block_hashes.keys())))
+                break
+        return reorg_detected, reorg_depth
+    except Exception as e:
+        logger.error(f"Error in check_for_chain_reorg: {e}")
+        return False, 0
+    
+async def periodic_update_task(rpc_connection, update_interval=60):
+    while True:
+        await update_recent_block_hashes(rpc_connection)
+        await asyncio.sleep(update_interval)
+    
+async def check_if_blockchain_is_fully_synced(use_optional_checks = 0) -> (bool, str):
     expected_block_time_in_seconds = 2.5 * 60
     number_of_past_minutes_to_check_for_new_block = 15
     reason_for_thinking_we_are_not_fully_synced = ''
-    use_optional_checks = 0
     global rpc_connection
     try:
         blockchain_info = await rpc_connection.getblockchaininfo()
-        # Check if Pasteld is still starting up
-        if blockchain_info['status'] != 'running':
-            reason_for_thinking_we_are_not_fully_synced += 'Pasteld is still starting up. '
+        # Check the verification progress to determine if the node is almost or fully synced
+        if blockchain_info['verificationprogress'] < 0.999:  # Adjust this threshold as needed
+            reason_for_thinking_we_are_not_fully_synced += 'Blockchain verification in progress. '
         # Check if Pasteld is in the initial sync period
         if await currently_in_initial_sync_period():
             reason_for_thinking_we_are_not_fully_synced += 'Pasteld is in initial sync period. '
-        # Check if there are new blocks in a reasonable time
-        latest_block_time = blockchain_info['mediantime']
+        # Check if there are new blocks in a reasonable time; Get the latest block's timestamp and compare it with the current system time:
+        latest_block_hash = blockchain_info['bestblockhash']
+        latest_block_header = await rpc_connection.getblockheader(latest_block_hash)
+        latest_block_time = latest_block_header['time']
         if time.time() - latest_block_time > (expected_block_time_in_seconds * number_of_past_minutes_to_check_for_new_block):
             reason_for_thinking_we_are_not_fully_synced += 'No new blocks for a long period. '
-        # Check if there are peer connections
-        if not blockchain_info['connections']:
+        # Check for peer connections
+        network_info = await rpc_connection.getnetworkinfo()
+        if not network_info['connections']:
             reason_for_thinking_we_are_not_fully_synced += 'No peer connections. '
         # Check for large chain reorg
-        if 'reorg' in blockchain_info['warnings'].lower():
-            reason_for_thinking_we_are_not_fully_synced += 'Large chain reorg detected. '
+        reorg_detected, reorg_depth = await check_for_chain_reorg(rpc_connection)
+        if reorg_detected:
+            reason_for_thinking_we_are_not_fully_synced += f'Chain reorganization detected. Depth: {reorg_depth}. '
         if use_optional_checks:
             # Check network quality based on the average latency of peer connections.  A high average latency indicates potential network issues that could affect synchronization.
             if not await check_network_quality(rpc_connection):
@@ -295,7 +356,7 @@ async def check_if_blockchain_is_fully_synced() -> (bool, str):
 
 async def get_current_pastel_block_height_func():
     global rpc_connection
-    fully_synced, reason_for_thinking_we_are_not_fully_synced = await check_if_blockchain_is_fully_synced()
+    fully_synced, reason_for_thinking_we_are_not_fully_synced = is_blockchain_fully_synced()
     if not fully_synced:
         logger.error(f"Blockchain is not fully synced! Reason: {reason_for_thinking_we_are_not_fully_synced}")
         return reason_for_thinking_we_are_not_fully_synced
@@ -307,7 +368,7 @@ async def get_current_pastel_block_height_func():
 
 async def get_previous_block_hash_and_merkle_root_func():
     global rpc_connection
-    fully_synced, reason_for_thinking_we_are_not_fully_synced = await check_if_blockchain_is_fully_synced()
+    fully_synced, reason_for_thinking_we_are_not_fully_synced = is_blockchain_fully_synced()
     if not fully_synced:
         logger.error(f"Blockchain is not fully synced! Reason: {reason_for_thinking_we_are_not_fully_synced}")
         return reason_for_thinking_we_are_not_fully_synced, reason_for_thinking_we_are_not_fully_synced, reason_for_thinking_we_are_not_fully_synced
@@ -320,7 +381,7 @@ async def get_previous_block_hash_and_merkle_root_func():
 
 async def get_last_block_data_func():
     global rpc_connection
-    fully_synced, reason_for_thinking_we_are_not_fully_synced = await check_if_blockchain_is_fully_synced()
+    fully_synced, reason_for_thinking_we_are_not_fully_synced = is_blockchain_fully_synced()
     if not fully_synced:
         logger.error(f"Blockchain is not fully synced! Reason: {reason_for_thinking_we_are_not_fully_synced}")
         return reason_for_thinking_we_are_not_fully_synced
@@ -487,6 +548,10 @@ async def check_if_supernode_is_eligible_to_sign_block(supernode_pastelid_pubkey
     # Fetch current block height
     current_block_height = await get_current_pastel_block_height_func()
     # Iterate over the past 'current_number_of_enabled_supernodes' blocks
+    while isinstance(current_block_height, str):
+        logger.info('Problem fetching current block height, trying again in 10 seconds...')
+        asyncio.sleep(10)
+        current_block_height = await get_current_pastel_block_height_func()
     for height in range(current_block_height - current_number_of_enabled_supernodes, current_block_height):
         pubkey, signature = await check_block_header_for_supernode_validation_info(height)
         signing_data_list.append({'block_height': height, 'supernode_pastelid_pubkey': pubkey, 'supernode_signature': signature})
@@ -627,5 +692,3 @@ def install_pasteld_func(network_name='testnet'):
 
 rpc_host, rpc_port, rpc_user, rpc_password, other_flags = get_local_rpc_settings_func()
 rpc_connection = AsyncAuthServiceProxy(f"http://{rpc_user}:{rpc_password}@{rpc_host}:{rpc_port}")
-
-
