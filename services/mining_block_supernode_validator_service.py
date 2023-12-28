@@ -46,9 +46,14 @@ sync_status_cache = {
 
 async def update_sync_status_cache(rpc_connection):
     global sync_status_cache
+    use_disable_sync_check = 1
     while True:
         try:
-            is_synced, reason = await check_if_blockchain_is_fully_synced()
+            if use_disable_sync_check:
+                is_synced = True
+                reason = 'Sync check disabled'
+            else:
+                is_synced, reason = await check_if_blockchain_is_fully_synced()
             sync_status_cache = {
                 'last_updated': datetime.now(),
                 'is_fully_synced': is_synced,
