@@ -510,27 +510,58 @@ async def get_block_data(block_height_or_hash):
     block_data_cache[block_height_or_hash] = block_data  # Store data in cache for future use
     return block_data
 
+def find_start_of_extra_data(block_header):
+    fixed_header_length = 140
+    start_position = fixed_header_length # Start position of the variable-length fields (sPastelID and prevMerkleRootSignature)
+    pastel_id_length, bytes_consumed = decode_compact_size(block_header, start_position) # Skip the sPastelID field (standard string serialization with variable-length size prefix)
+    start_position += bytes_consumed + pastel_id_length
+    signature_length, bytes_consumed = decode_compact_size(block_header, start_position) # Skip the prevMerkleRootSignature field (vector serialization with variable-length size prefix)
+    start_position += bytes_consumed + signature_length
+    return start_position
+
+def decode_compact_size(data, offset):
+    first_byte = data[offset]
+    if first_byte < 0xfd:
+        return first_byte, 1  # Size is the first byte, 1 byte consumed
+    elif first_byte == 0xfd:
+        size = int.from_bytes(data[offset + 1:offset + 3], byteorder='little') # Next two bytes are the size
+        return size, 3  # Size is next two bytes, 3 bytes consumed
+    elif first_byte == 0xfe:
+        size = int.from_bytes(data[offset + 1:offset + 5], byteorder='little') # Next four bytes are the size
+        return size, 5  # Size is next four bytes, 5 bytes consumed
+    else:
+        size = int.from_bytes(data[offset + 1:offset + 9], byteorder='little') # Next eight bytes are the size
+        return size, 9  # Size is next eight bytes, 9 bytes consumed
+    
+def extract_pastelid_and_signature(block_header, start_position):
+    pastel_id_length, bytes_consumed = decode_compact_size(block_header, start_position) # Extracting PastelID (a serialized std::string with variable-length size prefix)
+    start_position += bytes_consumed
+    supernode_pastelid_pubkey = block_header[start_position:start_position + pastel_id_length]
+    start_position += pastel_id_length
+    signature_length, bytes_consumed = decode_compact_size(block_header, start_position) # Extracting prevMerkleRootSignature (a serialized vector of bytes with variable-length size prefix)
+    start_position += bytes_consumed
+    supernode_signature = block_header[start_position:start_position + signature_length]
+    return supernode_pastelid_pubkey, supernode_signature    
+
 async def check_block_header_for_supernode_validation_info(block_height_or_hash):
     global rpc_connection
     try: # Determine if the input is a block height (integer) or a block hash (string)
         if isinstance(block_height_or_hash, int) or (isinstance(block_height_or_hash, str) and block_height_or_hash.isdigit()):
             block_height = int(block_height_or_hash)  # Input is a block height
             block_hash = await rpc_connection.getblockhash(block_height)
-        else:  # Input is assumed to be a block hash
-            block_hash = block_height_or_hash
+        else:
+            block_hash = block_height_or_hash  # Input is assumed to be a block hash
         block_header = await get_block_data(block_hash)  # Use caching function to fetch the block header
-        if len(block_header) > 140: # Check if the block header has extra data beyond 140 bytes
-            extra_data = block_header[140:].decode('utf-8') # Extract and decode the data
-            parts = extra_data.split('|') # Attempt to split the data into supernode_pastelid_pubkey and supernode_signature
+        if len(block_header) > 140: # Check and parse the block header based on its length
+            start_of_extra_data = find_start_of_extra_data(block_header) # Parse the variable length encoding to find the start of PastelID and signature
+            extra_data = block_header[start_of_extra_data:].decode('utf-8') # Extract and decode the PastelID and signature
+            parts = extra_data.split('|')
             if len(parts) == 2:
-                supernode_pastelid_pubkey = parts[0]
-                supernode_signature = parts[1]
-            else: # Handle the case where there is no delimiter
-                pubkey_length = 86 # len("jXYmHy1uLXuyaKq1YmkFPXd47i3jhqn7b4t7ytNvQr9xQyhyPVaKiQqBu4Knhcp3K9CHKPStWHbEEZLJjCTCzG")
-                supernode_pastelid_pubkey = extra_data[:pubkey_length]
-                supernode_signature = extra_data[pubkey_length:]
+                supernode_pastelid_pubkey, supernode_signature = parts
+            else:
+                supernode_pastelid_pubkey, supernode_signature = extract_pastelid_and_signature(extra_data)
             return supernode_pastelid_pubkey, supernode_signature
-        else: # No extra data beyond 140 bytes
+        else:
             return "", ""
     except Exception as e:
         logger.error(f"Error in check_block_header_for_supernode_validation_info: {e}")
