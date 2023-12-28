@@ -598,8 +598,6 @@ async def check_if_supernode_is_eligible_to_sign_block(supernode_pastelid_pubkey
     # Convert DataFrame to a list of dictionaries
     signing_data_list = signing_data.to_dict(orient='records')
     # Check if the provided pubkey has signed any of the past blocks
-    is_eligible = supernode_pastelid_pubkey in signing_data['supernode_pastelid_pubkey'].values
-    # Check if the provided pubkey has signed any of the past blocks
     is_eligible = supernode_pastelid_pubkey not in signing_data['supernode_pastelid_pubkey'].values
     # Find the last block signed by the supernode
     last_signed = signing_data[signing_data['supernode_pastelid_pubkey'] == supernode_pastelid_pubkey].tail(1)
