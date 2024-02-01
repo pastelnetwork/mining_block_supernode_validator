@@ -15,6 +15,7 @@ import warnings
 from datetime import datetime, timedelta
 from typing import Optional
 import dirtyjson
+import numpy as np
 import pandas as pd
 import psutil
 from httpx import AsyncClient, Limits, Timeout
@@ -166,8 +167,17 @@ class JSONRPCException(Exception):
 
 def EncodeDecimal(o):
     if isinstance(o, decimal.Decimal):
-        return float(round(o, 8))
-    raise TypeError(repr(o) + " is not JSON serializable")
+        return float(o)
+    elif isinstance(o, np.integer):
+        return int(o)  # Convert numpy integers to Python int
+    elif isinstance(o, np.floating):
+        return float(o)  # Convert numpy floats to Python float
+    elif isinstance(o, np.ndarray):
+        return o.tolist()  # Convert numpy arrays to list
+    elif isinstance(o, (int, float, str, bool, list, dict, type(None))):
+        return o  # These types are already JSON serializable
+    else:
+        raise TypeError(f"Object of type {type(o).__name__} is not JSON serializable")
     
 class AsyncAuthServiceProxy:
     max_concurrent_requests = 5000
