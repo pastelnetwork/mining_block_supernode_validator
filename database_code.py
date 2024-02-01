@@ -55,7 +55,6 @@ class BlockHeaderValidationInfo(BaseModel):
 
 class SupernodeEligibilityResponse(BaseModel):
     is_eligible: bool
-    signing_data: List[dict]
     current_block_height: int
     current_number_of_registered_supernodes: int
     current_number_of_mining_enabled_supernodes: int
@@ -64,6 +63,7 @@ class SupernodeEligibilityResponse(BaseModel):
     last_signed_block_hash: Optional[str] = None
     blocks_since_last_signed: Optional[int] = None
     blocks_until_eligibility_restored : int = 0
+    signing_data: List[dict]
 
 class SignPayloadResponse(BaseModel):
     payload_value: str

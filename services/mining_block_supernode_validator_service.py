@@ -547,16 +547,6 @@ def decode_compact_size(data, offset):
         size = int.from_bytes(data[offset + 1:offset + 9], byteorder='little') # Next eight bytes are the size
         return size, 9  # Size is next eight bytes, 9 bytes consumed
     
-def extract_pastelid_and_signature(block_header, start_position):
-    pastel_id_length, bytes_consumed = decode_compact_size(block_header, start_position) # Extracting PastelID (a serialized std::string with variable-length size prefix)
-    start_position += bytes_consumed
-    supernode_pastelid_pubkey = block_header[start_position:start_position + pastel_id_length]
-    start_position += pastel_id_length
-    signature_length, bytes_consumed = decode_compact_size(block_header, start_position) # Extracting prevMerkleRootSignature (a serialized vector of bytes with variable-length size prefix)
-    start_position += bytes_consumed
-    supernode_signature = block_header[start_position:start_position + signature_length]
-    return supernode_pastelid_pubkey, supernode_signature    
-
 async def check_block_header_for_supernode_validation_info(block_height_or_hash):
     global rpc_connection
     try: # Determine if the input is a block height (integer) or a block hash (string)
@@ -566,14 +556,9 @@ async def check_block_header_for_supernode_validation_info(block_height_or_hash)
         else:
             block_hash = block_height_or_hash  # Input is assumed to be a block hash
         block_header = await get_block_data(block_hash)  # Use caching function to fetch the block header
-        if len(block_header) > 140: # Check and parse the block header based on its length
-            start_of_extra_data = find_start_of_extra_data(block_header) # Parse the variable length encoding to find the start of PastelID and signature
-            extra_data = block_header[start_of_extra_data:].decode('utf-8') # Extract and decode the PastelID and signature
-            parts = extra_data.split('|')
-            if len(parts) == 2:
-                supernode_pastelid_pubkey, supernode_signature = parts
-            else:
-                supernode_pastelid_pubkey, supernode_signature = extract_pastelid_and_signature(extra_data)
+        if 'pastelid' in block_header: # Check if the block header contains the PastelID and signature
+            supernode_pastelid_pubkey = block_header['pastelid']
+            supernode_signature = block_header['prevMerkleRootSignature']
             return supernode_pastelid_pubkey, supernode_signature
         else:
             return "", ""
@@ -615,7 +600,6 @@ async def check_if_supernode_is_eligible_to_sign_block(supernode_pastelid_pubkey
     # Prepare the response
     return {
         "is_eligible": is_eligible,
-        "signing_data": signing_data_list,
         "current_block_height": current_block_height,
         "current_number_of_registered_supernodes": total_number_of_supernodes,
         "current_number_of_mining_enabled_supernodes": total_number_of_mining_enabled_supernodes,
@@ -623,7 +607,8 @@ async def check_if_supernode_is_eligible_to_sign_block(supernode_pastelid_pubkey
         "last_signed_block_height": last_signed_block_height,
         "last_signed_block_hash": last_signed_block_hash,
         "blocks_since_last_signed": blocks_since_last_signed,
-        "blocks_until_eligibility_restored": blocks_until_eligibility_restored 
+        "blocks_until_eligibility_restored": blocks_until_eligibility_restored,
+        "signing_data": signing_data_list,
     } 
     
 #Misc helper functions:
