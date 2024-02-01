@@ -7,6 +7,7 @@ import hashlib
 import ipaddress
 import json
 import os
+import math
 import platform
 import statistics
 import time
@@ -107,29 +108,35 @@ def parse_mime_type(mime_type):
 def get_local_rpc_settings_func(directory_with_pastel_conf=os.path.expanduser("~/.pastel/")):
     with open(os.path.join(directory_with_pastel_conf, "pastel.conf"), 'r') as f:
         lines = f.readlines()
+    # Initialize variables
     other_flags = {}
     rpchost = '127.0.0.1'
     rpcport = '19932'
+    rpcuser = 'default_user'
+    rpcpassword = 'default_password'
+    genpastelid = None  # Initialize the genpastelid variable
+    genpassphrase = None  # Initialize the genpassphrase variable
     for line in lines:
-        if line.startswith('rpcport'):
-            value = line.split('=')[1]
-            rpcport = value.strip()
-        elif line.startswith('rpcuser'):
-            value = line.split('=')[1]
-            rpcuser = value.strip()
-        elif line.startswith('rpcpassword'):
-            value = line.split('=')[1]
-            rpcpassword = value.strip()
-        elif line.startswith('rpchost'):
-            pass
-        elif line == '\n':
-            pass
-        else:
-            current_flag = line.strip().split('=')[0].strip()
-            current_value = line.strip().split('=')[1].strip()
-            other_flags[current_flag] = current_value
-    return rpchost, rpcport, rpcuser, rpcpassword, other_flags
-    
+        if '=' in line:  # Check if line contains '='
+            key, value = line.strip().split('=', 1)  # Split only once
+            value = value.strip()  # Strip whitespace from value
+            if key == 'rpcport':
+                rpcport = value
+            elif key == 'rpcuser':
+                rpcuser = value
+            elif key == 'rpcpassword':
+                rpcpassword = value
+            elif key == 'rpchost':
+                rpchost = value
+            elif key == 'genpastelid':  # Check for genpastelid
+                genpastelid = value
+            elif key == 'genpassphrase':  # Check for genpassphrase
+                genpassphrase = value
+            else:
+                other_flags[key] = value
+    # Return all extracted values including genpastelid and genpassphrase
+    return rpchost, rpcport, rpcuser, rpcpassword, genpastelid, genpassphrase, other_flags
+
 def get_remote_rpc_settings_func():
     rpchost = '45.67.221.205'
     #rpchost = '209.145.54.164'
@@ -442,6 +449,7 @@ async def check_supernode_list_func():
             masternode_list_full_df.loc[current_row[0], 'extAddress'] = current_extra['extAddress']
             masternode_list_full_df.loc[current_row[0], 'extP2P'] = current_extra['extP2P']
             masternode_list_full_df.loc[current_row[0], 'extKey'] = current_extra['extKey']
+            masternode_list_full_df.loc[current_row[0], 'eligibleForMining'] = current_extra['eligibleForMining']
     masternode_list_full_df['lastseentime'] = pd.to_datetime(masternode_list_full_df['lastseentime'], unit='s')
     masternode_list_full_df['lastpaidtime'] = pd.to_datetime(masternode_list_full_df['lastpaidtime'], unit='s')
     masternode_list_full_df['activeseconds'] = masternode_list_full_df['activeseconds'].astype(int)
@@ -504,7 +512,8 @@ def safe_json_loads_func(json_string: str) -> dict:
         return loaded_json
     except Exception as e:
         logger.error(f"Encountered an error while trying to parse json_string: {e}")
-        loaded_json = dirtyjson.loads(json_string.replace('\\"', '"').replace('\/', '/').replace('\\n', ' '))
+        # Removed the unnecessary replacement of '\/' with '/'
+        loaded_json = dirtyjson.loads(json_string.replace('\\"', '"').replace('\\n', ' '))
         return loaded_json
 
 async def get_block_data(block_height_or_hash):
@@ -573,32 +582,28 @@ async def check_block_header_for_supernode_validation_info(block_height_or_hash)
         return "", ""
 
 async def check_if_supernode_is_eligible_to_sign_block(supernode_pastelid_pubkey):
-    # Get the supernode list
-    supernode_list_json = await check_supernode_list_func()
-    supernode_list_df = pd.read_json(supernode_list_json, orient='index')
-    # Count the number of ENABLED supernodes
-    enabled_supernodes = supernode_list_df[supernode_list_df['supernode_status'] == 'ENABLED']
-    current_number_of_enabled_supernodes = len(enabled_supernodes)
-    # Initialize a list to store results
-    signing_data_list = []
-    # Fetch current block height
-    current_block_height = await get_current_pastel_block_height_func()
+    global rpc_connection
+    masternode_list_full = await check_supernode_list_func()
+    masternode_list_full_df = pd.DataFrame(safe_json_loads_func(masternode_list_full))
+    total_number_of_supernodes = len(masternode_list_full_df)
+    getminingeligibility_command_output = await rpc_connection.getminingeligibility()
+    getminingeligibility_df = pd.DataFrame(getminingeligibility_command_output['nodes'])
+    total_number_of_mining_enabled_supernodes = getminingeligibility_command_output['miningEnabledCount']
+    eligible_supernodes_df = getminingeligibility_df[getminingeligibility_df['eligible'] == True]
+    total_number_of_currently_eligible_supernodes = len(eligible_supernodes_df)
+    lookback_period_in_blocks = math.ceil(total_number_of_mining_enabled_supernodes*.75)
+    signing_data_list = [] # Initialize a list to store results
+    current_block_height = getminingeligibility_command_output['height']
     # Iterate over the past 'current_number_of_enabled_supernodes' blocks
-    while isinstance(current_block_height, str):
-        logger.info('Problem fetching current block height, trying again in 10 seconds...')
-        asyncio.sleep(10)
-        current_block_height = await get_current_pastel_block_height_func()
-    for height in range(current_block_height - current_number_of_enabled_supernodes, current_block_height):
+    for height in range(current_block_height - lookback_period_in_blocks, current_block_height):
         pubkey, signature = await check_block_header_for_supernode_validation_info(height)
         signing_data_list.append({'block_height': height, 'supernode_pastelid_pubkey': pubkey, 'supernode_signature': signature})
     # Convert the list to DataFrame
     signing_data = pd.DataFrame(signing_data_list)
     # Check if the provided pubkey has signed any of the past blocks
-    is_eligible = supernode_pastelid_pubkey in signing_data['supernode_pastelid_pubkey'].values
+    is_eligible = supernode_pastelid_pubkey in eligible_supernodes_df['mnid'].values
     # Convert DataFrame to a list of dictionaries
     signing_data_list = signing_data.to_dict(orient='records')
-    # Check if the provided pubkey has signed any of the past blocks
-    is_eligible = supernode_pastelid_pubkey not in signing_data['supernode_pastelid_pubkey'].values
     # Find the last block signed by the supernode
     last_signed = signing_data[signing_data['supernode_pastelid_pubkey'] == supernode_pastelid_pubkey].tail(1)
     last_signed_block_height = last_signed['block_height'].iloc[0] if not last_signed.empty else 0
@@ -606,19 +611,20 @@ async def check_if_supernode_is_eligible_to_sign_block(supernode_pastelid_pubkey
     # Calculate blocks_since_last_signed
     blocks_since_last_signed = current_block_height - last_signed_block_height if last_signed_block_height > 0 else 0
     # Calculate supernode_is_eligible_again_in_n_blocks
-    blocks_until_eligibility_restored  = current_number_of_enabled_supernodes - blocks_since_last_signed if not is_eligible else 0
+    blocks_until_eligibility_restored = total_number_of_mining_enabled_supernodes*0.75 - blocks_since_last_signed if not is_eligible else 0
     # Prepare the response
     return {
         "is_eligible": is_eligible,
         "signing_data": signing_data_list,
         "current_block_height": current_block_height,
-        "current_number_of_enabled_supernodes": current_number_of_enabled_supernodes,
+        "current_number_of_registered_supernodes": total_number_of_supernodes,
+        "current_number_of_mining_enabled_supernodes": total_number_of_mining_enabled_supernodes,
+        "current_number_of_eligible_supernodes": total_number_of_currently_eligible_supernodes,
         "last_signed_block_height": last_signed_block_height,
         "last_signed_block_hash": last_signed_block_hash,
         "blocks_since_last_signed": blocks_since_last_signed,
-        "blocks_until_eligibility_restored ": blocks_until_eligibility_restored 
-    }    
-    
+        "blocks_until_eligibility_restored": blocks_until_eligibility_restored 
+    } 
     
 #Misc helper functions:
 class MyTimer():
@@ -724,5 +730,5 @@ def install_pasteld_func(network_name='testnet'):
 #_______________________________________________________________
 
 
-rpc_host, rpc_port, rpc_user, rpc_password, other_flags = get_local_rpc_settings_func()
+rpc_host, rpc_port, rpc_user, rpc_password, genpastelid, genpassphrase, other_flags = get_local_rpc_settings_func()
 rpc_connection = AsyncAuthServiceProxy(f"http://{rpc_user}:{rpc_password}@{rpc_host}:{rpc_port}")
