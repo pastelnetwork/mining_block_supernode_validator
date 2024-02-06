@@ -63,7 +63,6 @@ class SupernodeEligibilityResponse(BaseModel):
     last_signed_block_hash: Optional[str] = None
     blocks_since_last_signed: Optional[int] = None
     blocks_until_eligibility_restored : int = 0
-    signing_data: List[dict]
 
 class SignPayloadResponse(BaseModel):
     payload_value: str

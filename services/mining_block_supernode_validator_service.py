@@ -617,8 +617,7 @@ async def check_if_supernode_is_eligible_to_sign_block(supernode_pastelid_pubkey
         "last_signed_block_height": last_signed_block_height,
         "last_signed_block_hash": last_signed_block_hash,
         "blocks_since_last_signed": blocks_since_last_signed,
-        "blocks_until_eligibility_restored": blocks_until_eligibility_restored,
-        "signing_data": signing_data_list,
+        "blocks_until_eligibility_restored": blocks_until_eligibility_restored
     } 
     
 #Misc helper functions:
