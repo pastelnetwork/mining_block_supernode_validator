@@ -72,7 +72,7 @@ async def update_supernode_eligibility():
         await asyncio.sleep(SLEEP_SECONDS_BETWEEN_PASTELID_ELIGIBILITY_CHECKS)
 
 async def get_signature_from_remote_machine(remote_ip, auth_token):
-    url = f"http://{remote_ip}/get_signature_round_robin"
+    url = f"http://{remote_ip}:9997/get_signature_round_robin"
     headers = {"Authorization": auth_token}
     async with httpx.AsyncClient() as client:
         response = await client.get(url, headers=headers)
