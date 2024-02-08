@@ -70,6 +70,15 @@ class SignPayloadResponse(BaseModel):
     signature: str
     utc_timestamp: str
     
+class SignaturePack(Base):
+    __tablename__ = 'signature_packs'
+    id = Column(Integer, primary_key=True, index=True)
+    previous_block_height = Column(Integer)
+    previous_block_hash = Column(String)
+    previous_block_merkle_root = Column(String)
+    requesting_machine_ip_address = Column(String)
+    signatures = Column(JSON)  # Storing JSON directly; ensure your DB supports JSON columns    
+    
 class SignatureDetails(BaseModel):
     signature: str
     utc_timestamp: datetime
@@ -82,8 +91,8 @@ class SignaturePackResponse(BaseModel):
     signatures: Dict[str, SignatureDetails]
 
     class Config:
-        orm_mode = True    
-    
+        from_attributes = True  # This enables the model to work with ORM objects
+            
 def to_serializable(val):
     if isinstance(val, datetime):
         return val.isoformat()

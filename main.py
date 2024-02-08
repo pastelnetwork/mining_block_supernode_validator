@@ -1,9 +1,10 @@
-from database_code import initialize_db, get_db, SignedPayload, SignedPayloadResponse, BlockHeaderValidationInfo, SupernodeEligibilityResponse, ValidateSignatureResponse, SignaturePackResponse
+from database_code import initialize_db, get_db, SignedPayload, SignedPayloadResponse, BlockHeaderValidationInfo, SupernodeEligibilityResponse, ValidateSignatureResponse, SignaturePack, SignaturePackResponse
 from logger_config import setup_logger
 import asyncio
 from fastapi import FastAPI, HTTPException, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import APIKeyHeader
+from fastapi.responses import JSONResponse
 import uvloop
 from uvicorn import Config, Server
 from decouple import Config as DecoupleConfig
@@ -88,7 +89,6 @@ async def get_signature_pack_from_remote_machine(remote_ip, auth_token):
         if response.status_code != 200: # Handle non-200 responses appropriately
             return {"error": f"Received status code {response.status_code}"}
         return response.json()
-    
         
 try:
     pastelid_secrets_dict = load_yaml(filepath_to_pastelid_secrets)
@@ -206,27 +206,45 @@ async def get_signature_pack_endpoint(request: Request, db: AsyncSession = Depen
     - **token**: Authorization token required.
     Returns a `SignaturePackResponse` object containing all the signatures as well as related metadata.
     """
+    previous_block_hash, previous_block_merkle_root, previous_block_height = await get_previous_block_hash_and_merkle_root_func()
+    signature_pack_dict = {'previous_block_height': previous_block_height,
+                        'previous_block_hash': previous_block_hash,
+                        'previous_block_merkle_root': previous_block_merkle_root,
+                        'requesting_machine_ip_address': request.client.host,
+                        'signatures': {}
+                        }    
+    logger.info(f"Signature pack requested for block height {previous_block_height} from {request.client.host}")
+    total_supernodes = len(pastelid_secrets_dict)
+    counter = 0
     for selected_supernode_name, credentials in supernode_iterator:
-        pastelid = credentials['pastelid']
-        passphrase = credentials['pwd']
-        previous_block_hash, previous_block_merkle_root, previous_block_height = await get_previous_block_hash_and_merkle_root_func()
-        signature_pack_dict = {'previous_block_height': previous_block_height,
-                            'previous_block_hash': previous_block_hash,
-                            'previous_block_merkle_root': previous_block_merkle_root,
-                            'requesting_machine_ip_address': request.client.host,
-                            'signatures': {}
-                            }
-        
-        signature = await sign_message_with_pastelid_func(pastelid, previous_block_merkle_root, passphrase)
-        signature_dict_for_pastelid = {
-            'signature': signature,
-            'utc_timestamp': str(datetime.utcnow())
-        }
-        signature_pack_dict['signatures'][pastelid] = signature_dict_for_pastelid
-        db.add(signature_pack_dict)
-        await db.commit()
-        return SignaturePackResponse.from_orm(signature_pack_dict)
-    raise HTTPException(status_code=500, detail='Unable to get signature from any supernode')
+        counter += 1
+        if counter > total_supernodes:
+            break
+        try:
+            pastelid = credentials['pastelid']
+            passphrase = credentials['pwd']
+            signature = await sign_message_with_pastelid_func(pastelid, previous_block_merkle_root, passphrase)
+            signature_dict_for_pastelid = {
+                'signature': signature,
+                'utc_timestamp': str(datetime.utcnow())
+            }
+            signature_pack_dict['signatures'][pastelid] = signature_dict_for_pastelid
+            logger.info(f"Signature for PastelID {pastelid} added to signature pack for block height {previous_block_height}")
+            await asyncio.sleep(0.05)  # Sleep for a short time to avoid RPC issues
+        except Exception as e:
+            logger.error(f'Error signing payload with PastelID {pastelid}: {e}')
+    logger.info(f"Signature pack for block height {previous_block_height} completed")
+    signature_pack = SignaturePack(
+        previous_block_height=signature_pack_dict['previous_block_height'],
+        previous_block_hash=signature_pack_dict['previous_block_hash'],
+        previous_block_merkle_root=signature_pack_dict['previous_block_merkle_root'],
+        requesting_machine_ip_address=signature_pack_dict['requesting_machine_ip_address'],
+        signatures=signature_pack_dict['signatures']
+    )
+    db.add(signature_pack)
+    await db.commit()
+    await db.refresh(signature_pack)  # Refresh the instance to ensure it's up-to-date.
+    return SignaturePackResponse.from_orm(signature_pack)
 
 
 @app.get("/get_previous_block_merkle_root", response_model=str)
@@ -268,7 +286,7 @@ async def get_merkle_signature_from_remote_machine_endpoint(remote_ip: str, toke
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@app.get("/get_block_signature_pack_from_remote_machine/{remote_ip}", response_model=dict)
+@app.get("/get_block_signature_pack_from_remote_machine/{remote_ip}", response_model=SignaturePackResponse)
 async def get_block_signature_pack_from_remote_machine_endpoint(remote_ip: str, token: str = Depends(verify_token)):
     """
     Get a pack of Supernode PastelID signatures on the previous Pastel Block's Merkle Root from a remote machine using all configured PastelIDs on that machine.
@@ -276,16 +294,24 @@ async def get_block_signature_pack_from_remote_machine_endpoint(remote_ip: str, 
     - **remote_ip**: IP address of the remote machine.
     - **token**: Authorization token required.
     
-    Returns the JSON response from the remote machine, containing all signatures and related metadata.
+    Returns the JSON response from the remote machine, containing all signatures and related metadata, structured as per SignaturePackResponse model.
     """
     try:
-        response = await get_signature_pack_from_remote_machine(remote_ip, token)
-        return response
-    except HTTPException as http_ex:
-        raise http_ex
+        url = f"http://{remote_ip}:{UVICORN_PORT}/get_signature_pack"
+        headers = {"Authorization": token}
+        timeout = httpx.Timeout(45.0, connect=60.0)  # Set a 45-second timeout for the request
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            response = await client.get(url, headers=headers)
+            response.raise_for_status()  # This will raise an exception for 4XX/5XX responses
+            return response.json()  # Assuming the remote response matches the SignaturePackResponse model
+    except httpx.HTTPStatusError as http_ex:
+        detail = f"HTTP error from remote machine {remote_ip}: Status {http_ex.response.status_code}"
+        logger.error(detail)
+        return JSONResponse(status_code=http_ex.response.status_code, content={"detail": detail})
     except Exception as e:
-        logger.error(f"Error getting signature pack from remote machine: {e}")
-        raise HTTPException(status_code=500, detail="Internal server error")
+        detail = f"Error getting signature pack from remote machine: {e}"
+        logger.error(detail)
+        raise HTTPException(status_code=500, detail=detail)
     
     
 @app.get("/validate_supernode_signature", response_model=ValidateSignatureResponse)
