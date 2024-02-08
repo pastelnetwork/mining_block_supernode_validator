@@ -1,4 +1,4 @@
-from database_code import initialize_db, get_db, SignedPayload, SignedPayloadResponse, BlockHeaderValidationInfo, SupernodeEligibilityResponse, ValidateSignatureResponse
+from database_code import initialize_db, get_db, SignedPayload, SignedPayloadResponse, BlockHeaderValidationInfo, SupernodeEligibilityResponse, ValidateSignatureResponse, SignaturePackResponse
 from logger_config import setup_logger
 import asyncio
 from fastapi import FastAPI, HTTPException, Depends, Request
@@ -80,6 +80,16 @@ async def get_signature_from_remote_machine(remote_ip, auth_token):
             return {"error": f"Received status code {response.status_code}"}
         return response.json()
     
+async def get_signature_pack_from_remote_machine(remote_ip, auth_token):
+    url = f"http://{remote_ip}:{UVICORN_PORT}/get_signature_pack"
+    headers = {"Authorization": auth_token}
+    async with httpx.AsyncClient() as client:
+        response = await client.get(url, headers=headers)
+        if response.status_code != 200: # Handle non-200 responses appropriately
+            return {"error": f"Received status code {response.status_code}"}
+        return response.json()
+    
+        
 try:
     pastelid_secrets_dict = load_yaml(filepath_to_pastelid_secrets)
 except (FileNotFoundError, yaml.YAMLError) as e:
@@ -156,7 +166,7 @@ async def check_if_supernode_is_eligible_to_sign_block_endpoint(supernode_pastel
     
     
 @app.get("/get_signature_round_robin", response_model=SignedPayloadResponse)
-async def sign_payload_round_robin_endpoint(request: Request, db: AsyncSession = Depends(get_db), token: str = Depends(api_key_header_auth)):
+async def get_signature_round_robin_endpoint(request: Request, db: AsyncSession = Depends(get_db), token: str = Depends(api_key_header_auth)):
     """
     Get a PastelID signature on the previous Pastel block's Merkle Root using the next eligible PastelID from the user's list of owned Supernodes in sequence and verify the signature.
     - **token**: Authorization token required.
@@ -187,6 +197,36 @@ async def sign_payload_round_robin_endpoint(request: Request, db: AsyncSession =
             except Exception as e:
                 logger.error(f'Error signing payload with PastelID {pastelid}: {e}')
     raise HTTPException(status_code=500, detail='Unable to sign payload with any supernode')
+
+
+@app.get("/get_signature_pack", response_model=SignaturePackResponse)
+async def get_signature_pack_endpoint(request: Request, db: AsyncSession = Depends(get_db), token: str = Depends(api_key_header_auth)):
+    """
+    Get the dict of PastelID signatures on the previous Pastel block's Merkle Root using all of the Supernodes included in the user's config file.
+    - **token**: Authorization token required.
+    Returns a `SignaturePackResponse` object containing all the signatures as well as related metadata.
+    """
+    for selected_supernode_name, credentials in supernode_iterator:
+        pastelid = credentials['pastelid']
+        passphrase = credentials['pwd']
+        previous_block_hash, previous_block_merkle_root, previous_block_height = await get_previous_block_hash_and_merkle_root_func()
+        signature_pack_dict = {'previous_block_height': previous_block_height,
+                            'previous_block_hash': previous_block_hash,
+                            'previous_block_merkle_root': previous_block_merkle_root,
+                            'requesting_machine_ip_address': request.client.host,
+                            'signatures': {}
+                            }
+        
+        signature = await sign_message_with_pastelid_func(pastelid, previous_block_merkle_root, passphrase)
+        signature_dict_for_pastelid = {
+            'signature': signature,
+            'utc_timestamp': str(datetime.utcnow())
+        }
+        signature_pack_dict['signatures'][pastelid] = signature_dict_for_pastelid
+        db.add(signature_pack_dict)
+        await db.commit()
+        return SignaturePackResponse.from_orm(signature_pack_dict)
+    raise HTTPException(status_code=500, detail='Unable to get signature from any supernode')
 
 
 @app.get("/get_previous_block_merkle_root", response_model=str)
@@ -228,6 +268,26 @@ async def get_merkle_signature_from_remote_machine_endpoint(remote_ip: str, toke
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
+@app.get("/get_block_signature_pack_from_remote_machine/{remote_ip}", response_model=dict)
+async def get_block_signature_pack_from_remote_machine_endpoint(remote_ip: str, token: str = Depends(verify_token)):
+    """
+    Get a pack of Supernode PastelID signatures on the previous Pastel Block's Merkle Root from a remote machine using all configured PastelIDs on that machine.
+
+    - **remote_ip**: IP address of the remote machine.
+    - **token**: Authorization token required.
+    
+    Returns the JSON response from the remote machine, containing all signatures and related metadata.
+    """
+    try:
+        response = await get_signature_pack_from_remote_machine(remote_ip, token)
+        return response
+    except HTTPException as http_ex:
+        raise http_ex
+    except Exception as e:
+        logger.error(f"Error getting signature pack from remote machine: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+    
+    
 @app.get("/validate_supernode_signature", response_model=ValidateSignatureResponse)
 async def validate_supernode_signature(
     supernode_pastelid_pubkey: str, 

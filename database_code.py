@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker, declarative_base
 from decouple import Config as DecoupleConfig
 from pydantic import BaseModel
-from typing import List, Optional
+from typing import Optional, Dict
 
 config = DecoupleConfig(".env")
 DATABASE_URL_FOR_SQLITE = config.get("DATABASE_URL_FOR_SQLITE", cast=str, default="sqlite+aiosqlite:///pastel_mining_block_supernode_validator_api.sqlite")
@@ -69,6 +69,20 @@ class SignPayloadResponse(BaseModel):
     pastelid: str
     signature: str
     utc_timestamp: str
+    
+class SignatureDetails(BaseModel):
+    signature: str
+    utc_timestamp: datetime
+
+class SignaturePackResponse(BaseModel):
+    previous_block_height: int
+    previous_block_hash: str
+    previous_block_merkle_root: str
+    requesting_machine_ip_address: str
+    signatures: Dict[str, SignatureDetails]
+
+    class Config:
+        orm_mode = True    
     
 def to_serializable(val):
     if isinstance(val, datetime):

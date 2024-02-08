@@ -92,7 +92,7 @@ class ClientSessionManager:
         return await self.create_session()
 
     async def create_session(self) -> aiohttp.ClientSession:
-        connector = aiohttp.TCPConnector(limit=1000)
+        connector = aiohttp.TCPConnector(limit=10000)
         self.client_session = aiohttp.ClientSession(connector=connector)
         return self.client_session
 
@@ -606,7 +606,7 @@ async def check_if_supernode_is_eligible_to_sign_block(supernode_pastelid_pubkey
     # Calculate blocks_since_last_signed
     blocks_since_last_signed = current_block_height - last_signed_block_height if last_signed_block_height > 0 else 0
     # Calculate supernode_is_eligible_again_in_n_blocks
-    blocks_until_eligibility_restored = total_number_of_mining_enabled_supernodes*0.75 - blocks_since_last_signed if not is_eligible else 0
+    blocks_until_eligibility_restored = math.ceil(total_number_of_mining_enabled_supernodes*0.75) - blocks_since_last_signed if not is_eligible else 0
     # Prepare the response
     return {
         "is_eligible": is_eligible,
