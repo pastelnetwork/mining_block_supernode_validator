@@ -10,7 +10,7 @@ from uvicorn import Config, Server
 from decouple import Config as DecoupleConfig
 from services.mining_block_supernode_validator_service import (sign_message_with_pastelid_func, verify_message_with_pastelid_func, check_supernode_list_func,
                                                             check_block_header_for_supernode_validation_info, check_if_supernode_is_eligible_to_sign_block,
-                                                            get_previous_block_hash_and_merkle_root_func, check_if_blockchain_is_fully_synced,
+                                                            get_best_block_hash_and_merkle_root_func, check_if_blockchain_is_fully_synced,
                                                             periodic_update_task, update_sync_status_cache, rpc_connection)
 import yaml
 import json
@@ -168,7 +168,7 @@ async def check_if_supernode_is_eligible_to_sign_block_endpoint(supernode_pastel
 @app.get("/get_signature_round_robin", response_model=SignedPayloadResponse)
 async def get_signature_round_robin_endpoint(request: Request, db: AsyncSession = Depends(get_db), token: str = Depends(api_key_header_auth)):
     """
-    Get a PastelID signature on the previous Pastel block's Merkle Root using the next eligible PastelID from the user's list of owned Supernodes in sequence and verify the signature.
+    Get a PastelID signature on the best Pastel block's Merkle Root using the next eligible PastelID from the user's list of owned Supernodes in sequence and verify the signature.
     - **token**: Authorization token required.
     Returns a `SignedPayloadResponse` object containing the details of the signed payload.
     """
@@ -177,13 +177,13 @@ async def get_signature_round_robin_endpoint(request: Request, db: AsyncSession 
         if supernode_eligibility_cache.get(pastelid, False):
             passphrase = credentials['pwd']
             try:
-                previous_block_hash, previous_block_merkle_root, previous_block_height = await get_previous_block_hash_and_merkle_root_func()
-                signature = await sign_message_with_pastelid_func(pastelid, previous_block_merkle_root, passphrase)
-                verification_result = await verify_message_with_pastelid_func(pastelid, previous_block_merkle_root, signature)
+                best_block_hash, best_block_merkle_root, best_block_height = await get_best_block_hash_and_merkle_root_func()
+                signature = await sign_message_with_pastelid_func(pastelid, best_block_merkle_root, passphrase)
+                verification_result = await verify_message_with_pastelid_func(pastelid, best_block_merkle_root, signature)
                 if verification_result:
                     new_signed_payload = SignedPayload(
-                        payload_string=previous_block_merkle_root,
-                        payload_bytes=previous_block_merkle_root.encode(),
+                        payload_string=best_block_merkle_root,
+                        payload_bytes=best_block_merkle_root.encode(),
                         block_signature_payload={
                             'pastelid': pastelid,
                             'signature': signature,
@@ -202,18 +202,18 @@ async def get_signature_round_robin_endpoint(request: Request, db: AsyncSession 
 @app.get("/get_signature_pack", response_model=SignaturePackResponse)
 async def get_signature_pack_endpoint(request: Request, db: AsyncSession = Depends(get_db), token: str = Depends(api_key_header_auth)):
     """
-    Get the dict of PastelID signatures on the previous Pastel block's Merkle Root using all of the Supernodes included in the user's config file.
+    Get the dict of PastelID signatures on the best Pastel block's Merkle Root using all of the Supernodes included in the user's config file.
     - **token**: Authorization token required.
     Returns a `SignaturePackResponse` object containing all the signatures as well as related metadata.
     """
-    previous_block_hash, previous_block_merkle_root, previous_block_height = await get_previous_block_hash_and_merkle_root_func()
-    signature_pack_dict = {'previous_block_height': previous_block_height,
-                        'previous_block_hash': previous_block_hash,
-                        'previous_block_merkle_root': previous_block_merkle_root,
+    best_block_hash, best_block_merkle_root, best_block_height = await get_best_block_hash_and_merkle_root_func()
+    signature_pack_dict = {'best_block_height': best_block_height,
+                        'best_block_hash': best_block_hash,
+                        'best_block_merkle_root': best_block_merkle_root,
                         'requesting_machine_ip_address': request.client.host,
                         'signatures': {}
                         }    
-    logger.info(f"Signature pack requested for block height {previous_block_height} from {request.client.host}")
+    logger.info(f"Signature pack requested for block height {best_block_height} from {request.client.host}")
     total_supernodes = len(pastelid_secrets_dict)
     counter = 0
     for selected_supernode_name, credentials in supernode_iterator:
@@ -223,21 +223,21 @@ async def get_signature_pack_endpoint(request: Request, db: AsyncSession = Depen
         try:
             pastelid = credentials['pastelid']
             passphrase = credentials['pwd']
-            signature = await sign_message_with_pastelid_func(pastelid, previous_block_merkle_root, passphrase)
+            signature = await sign_message_with_pastelid_func(pastelid, best_block_merkle_root, passphrase)
             signature_dict_for_pastelid = {
                 'signature': signature,
                 'utc_timestamp': str(datetime.utcnow())
             }
             signature_pack_dict['signatures'][pastelid] = signature_dict_for_pastelid
-            logger.info(f"Signature for PastelID {pastelid} added to signature pack for block height {previous_block_height}")
+            logger.info(f"Signature for PastelID {pastelid} added to signature pack for block height {best_block_height}")
             await asyncio.sleep(0.05)  # Sleep for a short time to avoid RPC issues
         except Exception as e:
             logger.error(f'Error signing payload with PastelID {pastelid}: {e}')
-    logger.info(f"Signature pack for block height {previous_block_height} completed")
+    logger.info(f"Signature pack for block height {best_block_height} completed")
     signature_pack = SignaturePack(
-        previous_block_height=signature_pack_dict['previous_block_height'],
-        previous_block_hash=signature_pack_dict['previous_block_hash'],
-        previous_block_merkle_root=signature_pack_dict['previous_block_merkle_root'],
+        best_block_height=signature_pack_dict['best_block_height'],
+        best_block_hash=signature_pack_dict['best_block_hash'],
+        best_block_merkle_root=signature_pack_dict['best_block_merkle_root'],
         requesting_machine_ip_address=signature_pack_dict['requesting_machine_ip_address'],
         signatures=signature_pack_dict['signatures']
     )
@@ -247,29 +247,29 @@ async def get_signature_pack_endpoint(request: Request, db: AsyncSession = Depen
     return SignaturePackResponse.from_orm(signature_pack)
 
 
-@app.get("/get_previous_block_merkle_root", response_model=str)
-async def get_previous_block_merkle_root_endpoint(token: str = Depends(verify_token)):
+@app.get("/get_best_block_merkle_root", response_model=str)
+async def get_best_block_merkle_root_endpoint(token: str = Depends(verify_token)):
     """
-    Get the previous Pastel block's Merkle Root.
+    Get the best Pastel block's Merkle Root.
     
     - **token**: Authorization token required.
     
     Returns the Merkle Root as a string.
     """
     try:
-        previous_block_hash, previous_block_merkle_root, previous_block_height = await get_previous_block_hash_and_merkle_root_func()
-        return previous_block_merkle_root
+        best_block_hash, best_block_merkle_root, best_block_height = await get_best_block_hash_and_merkle_root_func()
+        return best_block_merkle_root
     except HTTPException as http_ex:
         raise http_ex
     except Exception as e:
-        logger.error(f"Error getting previous block Merkle Root: {e}")
+        logger.error(f"Error getting best block Merkle Root: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @app.get("/get_merkle_signature_from_remote_machine/{remote_ip}", response_model=dict)
 async def get_merkle_signature_from_remote_machine_endpoint(remote_ip: str, token: str = Depends(verify_token)):
     """
-    Get a Supernode PastelID signature on the previous Pastel Block's Merkle Root from a remote machine using round-robin selection of eligible PastelIDs.
+    Get a Supernode PastelID signature on the best Pastel Block's Merkle Root from a remote machine using round-robin selection of eligible PastelIDs.
 
     - **remote_ip**: IP address of the remote machine.
     - **token**: Authorization token required.
@@ -289,7 +289,7 @@ async def get_merkle_signature_from_remote_machine_endpoint(remote_ip: str, toke
 @app.get("/get_block_signature_pack_from_remote_machine/{remote_ip}", response_model=SignaturePackResponse)
 async def get_block_signature_pack_from_remote_machine_endpoint(remote_ip: str, token: str = Depends(verify_token)):
     """
-    Get a pack of Supernode PastelID signatures on the previous Pastel Block's Merkle Root from a remote machine using all configured PastelIDs on that machine.
+    Get a pack of Supernode PastelID signatures on the best Pastel Block's Merkle Root from a remote machine using all configured PastelIDs on that machine.
 
     - **remote_ip**: IP address of the remote machine.
     - **token**: Authorization token required.

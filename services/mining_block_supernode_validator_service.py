@@ -388,18 +388,18 @@ async def get_current_pastel_block_height_func():
         curent_block_height = best_block_details['height']
         return curent_block_height
 
-async def get_previous_block_hash_and_merkle_root_func():
+async def get_best_block_hash_and_merkle_root_func():
     global rpc_connection
     fully_synced, reason_for_thinking_we_are_not_fully_synced = is_blockchain_fully_synced()
     if not fully_synced:
         logger.error(f"Blockchain is not fully synced! Reason: {reason_for_thinking_we_are_not_fully_synced}")
         return reason_for_thinking_we_are_not_fully_synced, reason_for_thinking_we_are_not_fully_synced, reason_for_thinking_we_are_not_fully_synced
     else:    
-        previous_block_height = await get_current_pastel_block_height_func()
-        previous_block_hash = await rpc_connection.getblockhash(previous_block_height)
-        previous_block_details = await rpc_connection.getblock(previous_block_hash)
-        previous_block_merkle_root = previous_block_details['merkleroot']
-        return previous_block_hash, previous_block_merkle_root, previous_block_height
+        best_block_height = await get_current_pastel_block_height_func()
+        best_block_hash = await rpc_connection.getblockhash(best_block_height)
+        best_block_details = await rpc_connection.getblock(best_block_hash)
+        best_block_merkle_root = best_block_details['merkleroot']
+        return best_block_hash, best_block_merkle_root, best_block_height
 
 async def get_last_block_data_func():
     global rpc_connection

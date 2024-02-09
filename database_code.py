@@ -73,9 +73,9 @@ class SignPayloadResponse(BaseModel):
 class SignaturePack(Base):
     __tablename__ = 'signature_packs'
     id = Column(Integer, primary_key=True, index=True)
-    previous_block_height = Column(Integer)
-    previous_block_hash = Column(String)
-    previous_block_merkle_root = Column(String)
+    best_block_height = Column(Integer)
+    best_block_hash = Column(String)
+    best_block_merkle_root = Column(String)
     requesting_machine_ip_address = Column(String)
     signatures = Column(JSON)  # Storing JSON directly; ensure your DB supports JSON columns    
     
@@ -84,9 +84,9 @@ class SignatureDetails(BaseModel):
     utc_timestamp: datetime
 
 class SignaturePackResponse(BaseModel):
-    previous_block_height: int
-    previous_block_hash: str
-    previous_block_merkle_root: str
+    best_block_height: int
+    best_block_hash: str
+    best_block_merkle_root: str
     requesting_machine_ip_address: str
     signatures: Dict[str, SignatureDetails]
 
