@@ -223,7 +223,8 @@ async def get_signature_pack_endpoint(request: Request, db: AsyncSession = Depen
         try:
             pastelid = credentials['pastelid']
             passphrase = credentials['pwd']
-            signature = await sign_message_with_pastelid_func(pastelid, best_block_merkle_root, passphrase)
+            best_block_merkle_root_byte_vector = bytes.fromhex(best_block_merkle_root)
+            signature = await sign_message_with_pastelid_func(pastelid, best_block_merkle_root_byte_vector, passphrase)
             signature_dict_for_pastelid = {
                 'signature': signature,
                 'utc_timestamp': str(datetime.utcnow())
