@@ -225,7 +225,7 @@ async def get_signature_pack_endpoint(request: Request, db: AsyncSession = Depen
             pastelid = credentials['pastelid']
             passphrase = credentials['pwd']
             best_block_merkle_root_byte_vector = bytes.fromhex(best_block_merkle_root)
-            best_block_merkle_root_byte_vector_base64_encoded = base64.b64encode(best_block_merkle_root_byte_vector).decode('utf-8')
+            best_block_merkle_root_byte_vector_base64_encoded = base64.urlsafe_b64encode(best_block_merkle_root_byte_vector).decode('utf-8')
             signature = await sign_base64_encoded_message_with_pastelid_func(pastelid, best_block_merkle_root_byte_vector_base64_encoded, passphrase)
             signature_dict_for_pastelid = {
                 'signature': signature,
