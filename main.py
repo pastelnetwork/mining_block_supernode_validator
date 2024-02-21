@@ -8,12 +8,13 @@ from fastapi.responses import JSONResponse
 import uvloop
 from uvicorn import Config, Server
 from decouple import Config as DecoupleConfig
-from services.mining_block_supernode_validator_service import (sign_message_with_pastelid_func, verify_message_with_pastelid_func, check_supernode_list_func,
-                                                            check_block_header_for_supernode_validation_info, check_if_supernode_is_eligible_to_sign_block,
+from services.mining_block_supernode_validator_service import (sign_message_with_pastelid_func, sign_base64_encoded_message_with_pastelid_func, verify_message_with_pastelid_func,
+                                                            check_supernode_list_func, check_block_header_for_supernode_validation_info, check_if_supernode_is_eligible_to_sign_block,
                                                             get_best_block_hash_and_merkle_root_func, check_if_blockchain_is_fully_synced,
                                                             periodic_update_task, update_sync_status_cache, rpc_connection)
 import yaml
 import json
+import base64
 import aiofiles
 from typing import List, Tuple
 import itertools
@@ -224,7 +225,8 @@ async def get_signature_pack_endpoint(request: Request, db: AsyncSession = Depen
             pastelid = credentials['pastelid']
             passphrase = credentials['pwd']
             best_block_merkle_root_byte_vector = bytes.fromhex(best_block_merkle_root)
-            signature = await sign_message_with_pastelid_func(pastelid, best_block_merkle_root_byte_vector, passphrase)
+            best_block_merkle_root_byte_vector_base64_encoded = base64.b64encode(best_block_merkle_root_byte_vector).decode('utf-8')
+            signature = await sign_base64_encoded_message_with_pastelid_func(pastelid, best_block_merkle_root_byte_vector_base64_encoded, passphrase)
             signature_dict_for_pastelid = {
                 'signature': signature,
                 'utc_timestamp': str(datetime.utcnow())
