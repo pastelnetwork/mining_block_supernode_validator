@@ -8,7 +8,7 @@ from fastapi.responses import JSONResponse
 import uvloop
 from uvicorn import Config, Server
 from decouple import Config as DecoupleConfig
-from services.mining_block_supernode_validator_service import (sign_message_with_pastelid_func, sign_base64_encoded_message_with_pastelid_func, verify_message_with_pastelid_func,
+from services.mining_block_supernode_validator_service import (sign_message_with_pastelid_func, sign_base64_encoded_message_with_pastelid_func, verify_message_with_pastelid_func, verify_base64_encoded_message_with_pastelid_func,
                                                             check_supernode_list_func, check_block_header_for_supernode_validation_info, check_if_supernode_is_eligible_to_sign_block,
                                                             get_best_block_hash_and_merkle_root_func, check_if_blockchain_is_fully_synced,
                                                             periodic_update_task, update_sync_status_cache, rpc_connection)
@@ -225,8 +225,11 @@ async def get_signature_pack_endpoint(request: Request, db: AsyncSession = Depen
             pastelid = credentials['pastelid']
             passphrase = credentials['pwd']
             best_block_merkle_root_byte_vector = bytes.fromhex(best_block_merkle_root)
-            best_block_merkle_root_byte_vector_base64_encoded = base64.urlsafe_b64encode(best_block_merkle_root_byte_vector).decode('utf-8')
+            best_block_merkle_root_byte_vector_inverted = best_block_merkle_root_byte_vector[::-1]
+            best_block_merkle_root_byte_vector_base64_encoded = base64.b64encode(best_block_merkle_root_byte_vector_inverted).decode('utf-8')
             signature = await sign_base64_encoded_message_with_pastelid_func(pastelid, best_block_merkle_root_byte_vector_base64_encoded, passphrase)
+            verification_result = await verify_base64_encoded_message_with_pastelid_func(pastelid, best_block_merkle_root_byte_vector_base64_encoded, signature)
+            assert(verification_result=="OK")
             signature_dict_for_pastelid = {
                 'signature': signature,
                 'utc_timestamp': str(datetime.utcnow())

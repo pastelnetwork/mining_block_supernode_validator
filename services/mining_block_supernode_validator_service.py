@@ -429,12 +429,17 @@ async def sign_message_with_pastelid_func(pastelid, message_to_sign, passphrase)
 
 async def sign_base64_encoded_message_with_pastelid_func(pastelid, base64_message_to_sign, passphrase) -> str:
     global rpc_connection
-    results_dict = await rpc_connection.pastelid('sign-base64-encoded ', base64_message_to_sign, pastelid, passphrase, 'ed448')
+    results_dict = await rpc_connection.pastelid('sign-base64-encoded', base64_message_to_sign, pastelid, passphrase, 'ed448')
     return results_dict['signature']
 
 async def verify_message_with_pastelid_func(pastelid, message_to_verify, pastelid_signature_on_message) -> str:
     global rpc_connection
     verification_result = await rpc_connection.pastelid('verify', message_to_verify, pastelid_signature_on_message, pastelid, 'ed448')
+    return verification_result['verification']
+
+async def verify_base64_encoded_message_with_pastelid_func(pastelid, message_to_verify, pastelid_signature_on_message) -> str:
+    global rpc_connection
+    verification_result = await rpc_connection.pastelid('verify-base64-encoded', message_to_verify, pastelid_signature_on_message, pastelid, 'ed448')
     return verification_result['verification']
 
 async def check_masternode_top_func():
