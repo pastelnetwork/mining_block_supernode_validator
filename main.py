@@ -7,7 +7,7 @@ from fastapi.security import APIKeyHeader
 from fastapi.responses import JSONResponse
 import uvloop
 from uvicorn import Config, Server
-from decouple import Config as DecoupleConfig
+from decouple import Config as DecoupleConfig, RepositoryEnv
 from services.mining_block_supernode_validator_service import (sign_message_with_pastelid_func, sign_base64_encoded_message_with_pastelid_func, verify_message_with_pastelid_func, verify_base64_encoded_message_with_pastelid_func,
                                                             check_supernode_list_func, check_block_header_for_supernode_validation_info, check_if_supernode_is_eligible_to_sign_block,
                                                             get_best_block_hash_and_merkle_root_func, check_if_blockchain_is_fully_synced,
@@ -25,7 +25,7 @@ import httpx
 
 
 description_string = "🎢 Pastel's Mining Block Supernode Validator API provides various API endpoints to sign and validate proposed mined blocks and mining shares on the Pastel Blockchain. 💸"
-config = DecoupleConfig(".env")
+config = DecoupleConfig(RepositoryEnv('.env'))
 UVICORN_PORT = config.get("UVICORN_PORT", cast=int)
 EXPECTED_AUTH_TOKEN = config.get("AUTH_TOKEN", cast=str)
 SLEEP_SECONDS_BETWEEN_PASTELID_ELIGIBILITY_CHECKS = config.get("SLEEP_SECONDS_BETWEEN_PASTELID_ELIGIBILITY_CHECKS", cast=int)
