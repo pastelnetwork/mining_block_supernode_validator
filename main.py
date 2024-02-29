@@ -15,6 +15,7 @@ from services.mining_block_supernode_validator_service import (sign_message_with
 import yaml
 import json
 import base64
+import random
 import aiofiles
 from typing import List, Tuple
 import itertools
@@ -199,57 +200,43 @@ async def get_signature_round_robin_endpoint(request: Request, db: AsyncSession 
                 logger.error(f'Error signing payload with PastelID {pastelid}: {e}')
     raise HTTPException(status_code=500, detail='Unable to sign payload with any supernode')
 
-
 @app.get("/get_signature_pack", response_model=SignaturePackResponse)
 async def get_signature_pack_endpoint(request: Request, db: AsyncSession = Depends(get_db), token: str = Depends(api_key_header_auth)):
-    """
-    Get the dict of PastelID signatures on the best Pastel block's Merkle Root using all of the Supernodes included in the user's config file.
-    - **token**: Authorization token required.
-    Returns a `SignaturePackResponse` object containing all the signatures as well as related metadata.
-    """
     best_block_hash, best_block_merkle_root, best_block_height = await get_best_block_hash_and_merkle_root_func()
-    signature_pack_dict = {'best_block_height': best_block_height,
-                        'best_block_hash': best_block_hash,
-                        'best_block_merkle_root': best_block_merkle_root,
-                        'requesting_machine_ip_address': request.client.host,
-                        'signatures': {}
-                        }    
-    logger.info(f"Signature pack requested for block height {best_block_height} from {request.client.host}")
+    best_block_merkle_root_byte_vector = bytes.fromhex(best_block_merkle_root)[::-1]
+    best_block_merkle_root_byte_vector_base64_encoded = base64.b64encode(best_block_merkle_root_byte_vector).decode('utf-8')
     total_supernodes = len(pastelid_secrets_dict)
-    counter = 0
-    for selected_supernode_name, credentials in supernode_iterator:
-        counter += 1
-        if counter > total_supernodes:
-            break
+    async def process_supernode(credentials):
         try:
             pastelid = credentials['pastelid']
             passphrase = credentials['pwd']
-            best_block_merkle_root_byte_vector = bytes.fromhex(best_block_merkle_root)
-            best_block_merkle_root_byte_vector_inverted = best_block_merkle_root_byte_vector[::-1]
-            best_block_merkle_root_byte_vector_base64_encoded = base64.b64encode(best_block_merkle_root_byte_vector_inverted).decode('utf-8')
+            await asyncio.sleep(0.1*random.random())  # Sleep for a short time to avoid RPC issues
             signature = await sign_base64_encoded_message_with_pastelid_func(pastelid, best_block_merkle_root_byte_vector_base64_encoded, passphrase)
             verification_result = await verify_base64_encoded_message_with_pastelid_func(pastelid, best_block_merkle_root_byte_vector_base64_encoded, signature)
-            assert(verification_result=="OK")
-            signature_dict_for_pastelid = {
+            if verification_result != "OK":
+                raise ValueError("Verification failed")
+            logger.info(f"Signature for PastelID {pastelid} added to signature pack for block height {best_block_height}")
+            return pastelid, {
                 'signature': signature,
                 'utc_timestamp': str(datetime.utcnow())
             }
-            signature_pack_dict['signatures'][pastelid] = signature_dict_for_pastelid
-            logger.info(f"Signature for PastelID {pastelid} added to signature pack for block height {best_block_height}")
-            await asyncio.sleep(0.05)  # Sleep for a short time to avoid RPC issues
         except Exception as e:
             logger.error(f'Error signing payload with PastelID {pastelid}: {e}')
+            return pastelid, None
+    logger.info(f"Signature pack requested for block height {best_block_height} from {request.client.host}")
+    signatures = await asyncio.gather(*(process_supernode(credentials) for _, credentials in itertools.islice(supernode_iterator, total_supernodes)))
+    signature_pack_dict = {
+        'best_block_height': best_block_height,
+        'best_block_hash': best_block_hash,
+        'best_block_merkle_root': best_block_merkle_root,
+        'requesting_machine_ip_address': request.client.host,
+        'signatures': {pastelid: signature for pastelid, signature in signatures if signature is not None}
+    }
     logger.info(f"Signature pack for block height {best_block_height} completed")
-    signature_pack = SignaturePack(
-        best_block_height=signature_pack_dict['best_block_height'],
-        best_block_hash=signature_pack_dict['best_block_hash'],
-        best_block_merkle_root=signature_pack_dict['best_block_merkle_root'],
-        requesting_machine_ip_address=signature_pack_dict['requesting_machine_ip_address'],
-        signatures=signature_pack_dict['signatures']
-    )
+    signature_pack = SignaturePack(**signature_pack_dict)
     db.add(signature_pack)
     await db.commit()
-    await db.refresh(signature_pack)  # Refresh the instance to ensure it's up-to-date.
+    await db.refresh(signature_pack)
     return SignaturePackResponse.from_orm(signature_pack)
 
 
