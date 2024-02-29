@@ -200,6 +200,7 @@ async def get_signature_round_robin_endpoint(request: Request, db: AsyncSession 
                 logger.error(f'Error signing payload with PastelID {pastelid}: {e}')
     raise HTTPException(status_code=500, detail='Unable to sign payload with any supernode')
 
+
 @app.get("/get_signature_pack", response_model=SignaturePackResponse)
 async def get_signature_pack_endpoint(request: Request, db: AsyncSession = Depends(get_db), token: str = Depends(api_key_header_auth)):
     best_block_hash, best_block_merkle_root, best_block_height = await get_best_block_hash_and_merkle_root_func()
