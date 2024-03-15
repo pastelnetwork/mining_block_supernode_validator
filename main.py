@@ -377,6 +377,13 @@ async def startup_event():
     except Exception as e:
         logger.error(f"Error during startup: {e}")
 
+async def shutdown_event():
+    logger.info("Received shutdown signal, cancelling background tasks...")
+    tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+    [task.cancel() for task in tasks]
+    await asyncio.gather(*tasks, return_exceptions=True)
+    logger.info("Background tasks cancelled.")
+    
 async def main():
     update_interval_seconds = 60  # Update every 60 seconds
     uvicorn_config = Config(
@@ -385,16 +392,28 @@ async def main():
         port=UVICORN_PORT,
         loop="uvloop",
     )
+
+    # Create the Uvicorn server
+    server = Server(uvicorn_config)
+
+    # Register the shutdown event
+    server.on_shutdown = shutdown_event
+    
     # Create the periodic update task
     update_task = asyncio.create_task(periodic_update_task(rpc_connection, update_interval_seconds))
-        # Start the background task to update sync status
+    
+    # Start the background task to update sync status
     sync_check_task = asyncio.create_task(update_sync_status_cache(rpc_connection))
-    # Create the Uvicorn server task
-    server = Server(uvicorn_config)
-    server_task = server.serve()
-    # Run both tasks concurrently
-    await asyncio.gather(update_task, sync_check_task, server_task)
+
+    # Run the server
+    await server.serve()
+        
+    # Cancel the background tasks when the server is stopped
+    update_task.cancel()
+    sync_check_task.cancel()
+    await asyncio.gather(update_task, sync_check_task, return_exceptions=True)
 
 if __name__ == "__main__":
     asyncio.run(main())
+
 
