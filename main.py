@@ -48,7 +48,7 @@ app.add_middleware(
     expose_headers=["Authorization"]
 )
 
-filepath_to_pastelid_secrets = 'pastelids_for_devnet_sns.yml'
+filepath_to_pastelid_secrets = 'pastelids_for_sns.yml'
 
 async def load_yaml(file_path):
     async with aiofiles.open(file_path, 'r') as file:
