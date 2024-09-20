@@ -25,3 +25,4 @@ zstandard
 python-decouple
 uvloop
 pyyaml
+python-dotenv

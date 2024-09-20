@@ -5,13 +5,27 @@ from fastapi import FastAPI, HTTPException, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import APIKeyHeader
 from fastapi.responses import JSONResponse
+from contextlib import asynccontextmanager
 import uvloop
+import os
 from uvicorn import Config, Server
 from decouple import Config as DecoupleConfig, RepositoryEnv
-from services.mining_block_supernode_validator_service import (sign_message_with_pastelid_func, sign_base64_encoded_message_with_pastelid_func, verify_message_with_pastelid_func, verify_base64_encoded_message_with_pastelid_func,
-                                                            check_supernode_list_func, check_block_header_for_supernode_validation_info, check_if_supernode_is_eligible_to_sign_block,
-                                                            get_best_block_hash_and_merkle_root_func, check_if_blockchain_is_fully_synced,
-                                                            periodic_update_task, update_sync_status_cache, rpc_connection)
+from services.mining_block_supernode_validator_service import (
+    initialize_dotenv,
+    initialize_rpc,
+    AsyncAuthServiceProxy,
+    sign_message_with_pastelid_func,
+    sign_base64_encoded_message_with_pastelid_func,
+    verify_message_with_pastelid_func,
+    verify_base64_encoded_message_with_pastelid_func,
+    check_supernode_list_func,
+    check_block_header_for_supernode_validation_info,
+    check_if_supernode_is_eligible_to_sign_block,
+    get_best_block_hash_and_merkle_root_func,
+    check_if_blockchain_is_fully_synced,
+    periodic_update_task,
+    update_sync_status_cache,
+)
 import yaml
 import json
 import base64
@@ -22,7 +36,6 @@ import itertools
 from datetime import datetime
 from sqlalchemy.ext.asyncio import AsyncSession
 import httpx
-
 
 
 description_string = "🎢 Pastel's Mining Block Supernode Validator API provides various API endpoints to sign and validate proposed mined blocks and mining shares on the Pastel Blockchain. 💸"
@@ -36,7 +49,68 @@ pastelid_secrets_dict = {}
 supernode_iterator = itertools.cycle([])  # Global round-robin iterator for supernodes
 supernode_eligibility_cache = {} # Global cache to store supernode eligibility
 logger = setup_logger()
-app = FastAPI(title="Pastel Mining Block Supernode Validator API", description=description_string, docs_url="/")
+rpc_connection: AsyncAuthServiceProxy = None
+
+DEFAULT_PASTELIDS_FILENAME = 'pastelids_for_sns.yml'
+
+async def load_yaml(file_path):
+    async with aiofiles.open(file_path, 'r') as file:
+        data = await file.read()
+    return yaml.safe_load(data)['all']
+
+
+async def update_supernode_eligibility():
+    global rpc_connection
+    global supernode_eligibility_cache
+    while True:
+        start_time = datetime.utcnow()
+        current_supernode_json = await check_supernode_list_func(rpc_connection)
+        supernode_lookup = build_supernode_lookup(current_supernode_json)
+        for pastelid in supernode_lookup.keys():
+            eligibility_info = await check_if_supernode_is_eligible_to_sign_block(rpc_connection, pastelid)
+            supernode_eligibility_cache[pastelid] = eligibility_info
+        end_time = datetime.utcnow()
+        elapsed_seconds = (end_time - start_time).total_seconds() + SLEEP_SECONDS_BETWEEN_PASTELID_ELIGIBILITY_CHECKS
+        logger.info(f"Supernode eligibility cache updated. Elapsed time since last update: {elapsed_seconds:.2f} seconds. Current time: UTC {end_time}")
+        await asyncio.sleep(SLEEP_SECONDS_BETWEEN_PASTELID_ELIGIBILITY_CHECKS)
+
+
+async def startup_event():
+    asyncio.create_task(update_supernode_eligibility())  # Start the background task
+    global supernode_iterator
+    global pastelid_secrets_dict
+    try:
+        db_init_complete = await initialize_db()
+        logger.info(f"Database initialization complete: {db_init_complete}")
+
+        filepath_to_pastelid_secrets = os.getenv('PASTELIDS_FILENAME', DEFAULT_PASTELIDS_FILENAME)
+        pastelid_secrets_dict = await load_yaml(filepath_to_pastelid_secrets)
+        supernode_iterator = itertools.cycle(sorted(pastelid_secrets_dict.items(), key=lambda x: x[1]["pastelid"]))  # Initialize the round-robin iterator
+    except (FileNotFoundError, yaml.YAMLError) as exc_dict_load:
+        logger.error(f"Error loading YAML file: {exc_dict_load}")
+        pastelid_secrets_dict = {}
+    except Exception as e:
+        logger.error(f"Error during startup: {e}")
+
+
+async def shutdown_event():
+    logger.info("Received shutdown signal, cancelling background tasks...")
+    tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+    [task.cancel() for task in tasks]
+    await asyncio.gather(*tasks, return_exceptions=True)
+    logger.info("Background tasks cancelled.")
+
+
+@asynccontextmanager
+async def fastapi_lifespan(app: FastAPI):
+    try:
+        await startup_event()
+        yield
+    finally:
+        await shutdown_event()
+
+
+app = FastAPI(title="Pastel Mining Block Supernode Validator API", description=description_string, docs_url="/", lifespan=fastapi_lifespan)
 
 allow_all = ['*']
 app.add_middleware(
@@ -48,31 +122,11 @@ app.add_middleware(
     expose_headers=["Authorization"]
 )
 
-filepath_to_pastelid_secrets = 'pastelids_for_sns.yml'
-
-async def load_yaml(file_path):
-    async with aiofiles.open(file_path, 'r') as file:
-        data = await file.read()
-    return yaml.safe_load(data)['all']
-
 def build_supernode_lookup(supernode_list_json):
     supernode_dict = json.loads(supernode_list_json)
     lookup = {node.get("extKey"): node for node in supernode_dict.values()}
     return lookup
 
-async def update_supernode_eligibility():
-    global supernode_eligibility_cache
-    while True:
-        start_time = datetime.utcnow()
-        current_supernode_json = await check_supernode_list_func()
-        supernode_lookup = build_supernode_lookup(current_supernode_json)
-        for pastelid in supernode_lookup.keys():
-            eligibility_info = await check_if_supernode_is_eligible_to_sign_block(pastelid)
-            supernode_eligibility_cache[pastelid] = eligibility_info
-        end_time = datetime.utcnow()
-        elapsed_seconds = (end_time - start_time).total_seconds() + SLEEP_SECONDS_BETWEEN_PASTELID_ELIGIBILITY_CHECKS
-        logger.info(f"Supernode eligibility cache updated. Elapsed time since last update: {elapsed_seconds:.2f} seconds. Current time: UTC {end_time}")
-        await asyncio.sleep(SLEEP_SECONDS_BETWEEN_PASTELID_ELIGIBILITY_CHECKS)
 
 async def get_signature_from_remote_machine(remote_ip, auth_token):
     url = f"http://{remote_ip}:{UVICORN_PORT}/get_signature_round_robin"
@@ -82,7 +136,8 @@ async def get_signature_from_remote_machine(remote_ip, auth_token):
         if response.status_code != 200: # Handle non-200 responses appropriately
             return {"error": f"Received status code {response.status_code}"}
         return response.json()
-    
+
+
 async def get_signature_pack_from_remote_machine(remote_ip, auth_token):
     url = f"http://{remote_ip}:{UVICORN_PORT}/get_signature_pack"
     headers = {"Authorization": auth_token}
@@ -91,13 +146,8 @@ async def get_signature_pack_from_remote_machine(remote_ip, auth_token):
         if response.status_code != 200: # Handle non-200 responses appropriately
             return {"error": f"Received status code {response.status_code}"}
         return response.json()
-        
-try:
-    pastelid_secrets_dict = load_yaml(filepath_to_pastelid_secrets)
-except (FileNotFoundError, yaml.YAMLError) as e:
-    logger.error(f"Error loading YAML file: {e}")
-    pastelid_secrets_dict = {}
 
+  
 async def verify_token(api_key: str = Depends(api_key_header_auth)):
     if api_key != EXPECTED_AUTH_TOKEN:
         raise HTTPException(status_code=401, detail="Unauthorized")
@@ -174,14 +224,15 @@ async def get_signature_round_robin_endpoint(request: Request, db: AsyncSession 
     - **token**: Authorization token required.
     Returns a `SignedPayloadResponse` object containing the details of the signed payload.
     """
+    global rpc_connection
     for selected_supernode_name, credentials in supernode_iterator:
         pastelid = credentials['pastelid']
         if supernode_eligibility_cache.get(pastelid, False):
             passphrase = credentials['pwd']
             try:
-                best_block_hash, best_block_merkle_root, best_block_height = await get_best_block_hash_and_merkle_root_func()
-                signature = await sign_message_with_pastelid_func(pastelid, best_block_merkle_root, passphrase)
-                verification_result = await verify_message_with_pastelid_func(pastelid, best_block_merkle_root, signature)
+                best_block_hash, best_block_merkle_root, best_block_height = await get_best_block_hash_and_merkle_root_func(rpc_connection)
+                signature = await sign_message_with_pastelid_func(rpc_connection, pastelid, best_block_merkle_root, passphrase)
+                verification_result = await verify_message_with_pastelid_func(rpc_connection, pastelid, best_block_merkle_root, signature)
                 if verification_result:
                     new_signed_payload = SignedPayload(
                         payload_string=best_block_merkle_root,
@@ -203,7 +254,8 @@ async def get_signature_round_robin_endpoint(request: Request, db: AsyncSession 
 
 @app.get("/get_signature_pack", response_model=SignaturePackResponse)
 async def get_signature_pack_endpoint(request: Request, db: AsyncSession = Depends(get_db), token: str = Depends(api_key_header_auth)):
-    best_block_hash, best_block_merkle_root, best_block_height = await get_best_block_hash_and_merkle_root_func()
+    global rpc_connection
+    best_block_hash, best_block_merkle_root, best_block_height = await get_best_block_hash_and_merkle_root_func(rpc_connection)
     best_block_merkle_root_byte_vector = bytes.fromhex(best_block_merkle_root)[::-1]
     best_block_merkle_root_byte_vector_base64_encoded = base64.b64encode(best_block_merkle_root_byte_vector).decode('utf-8')
     total_supernodes = len(pastelid_secrets_dict)
@@ -212,8 +264,8 @@ async def get_signature_pack_endpoint(request: Request, db: AsyncSession = Depen
             pastelid = credentials['pastelid']
             passphrase = credentials['pwd']
             await asyncio.sleep(0.1*random.random())  # Sleep for a short time to avoid RPC issues
-            signature = await sign_base64_encoded_message_with_pastelid_func(pastelid, best_block_merkle_root_byte_vector_base64_encoded, passphrase)
-            verification_result = await verify_base64_encoded_message_with_pastelid_func(pastelid, best_block_merkle_root_byte_vector_base64_encoded, signature)
+            signature = await sign_base64_encoded_message_with_pastelid_func(rpc_connection, pastelid, best_block_merkle_root_byte_vector_base64_encoded, passphrase)
+            verification_result = await verify_base64_encoded_message_with_pastelid_func(rpc_connection, pastelid, best_block_merkle_root_byte_vector_base64_encoded, signature)
             if verification_result != "OK":
                 raise ValueError("Verification failed")
             logger.info(f"Signature for PastelID {pastelid} added to signature pack for block height {best_block_height}")
@@ -250,8 +302,9 @@ async def get_best_block_merkle_root_endpoint(token: str = Depends(verify_token)
     
     Returns the Merkle Root as a string.
     """
+    global rpc_connection
     try:
-        best_block_hash, best_block_merkle_root, best_block_height = await get_best_block_hash_and_merkle_root_func()
+        best_block_hash, best_block_merkle_root, best_block_height = await get_best_block_hash_and_merkle_root_func(rpc_connection)
         return best_block_merkle_root
     except HTTPException as http_ex:
         raise http_ex
@@ -306,8 +359,8 @@ async def get_block_signature_pack_from_remote_machine_endpoint(remote_ip: str, 
         detail = f"Error getting signature pack from remote machine: {e}"
         logger.error(detail)
         raise HTTPException(status_code=500, detail=detail)
-    
-    
+
+
 @app.get("/validate_supernode_signature", response_model=ValidateSignatureResponse)
 async def validate_supernode_signature(
     supernode_pastelid_pubkey: str, 
@@ -325,8 +378,10 @@ async def validate_supernode_signature(
     
     Returns a `ValidateSignatureResponse` object with validation result and submitted data.
     """
+    global rpc_connection
     try:
         verification_result = await verify_message_with_pastelid_func(
+            rpc_connection,
             supernode_pastelid_pubkey,
             signed_data_payload,
             supernode_pastelid_signature
@@ -362,32 +417,20 @@ async def check_if_blockchain_is_fully_synced_endpoint(token: str = Depends(veri
     except Exception as e:
         logger.error(f"Error checking blockchain sync status: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
-    
-    
-@app.on_event("startup")
-async def startup_event():
-    asyncio.create_task(update_supernode_eligibility())  # Start the background task
-    global supernode_iterator
-    global pastelid_secrets_dict
-    try:
-        db_init_complete = await initialize_db()
-        logger.info(f"Database initialization complete: {db_init_complete}")
-        pastelid_secrets_dict = await load_yaml(filepath_to_pastelid_secrets)
-        supernode_iterator = itertools.cycle(sorted(pastelid_secrets_dict.items(), key=lambda x: x[1]["pastelid"]))  # Initialize the round-robin iterator
-    except Exception as e:
-        logger.error(f"Error during startup: {e}")
 
-async def shutdown_event():
-    logger.info("Received shutdown signal, cancelling background tasks...")
-    tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
-    [task.cancel() for task in tasks]
-    await asyncio.gather(*tasks, return_exceptions=True)
-    logger.info("Background tasks cancelled.")
-    
+
 async def main():
+    global rpc_connection
+    
+    # initialize environment variables
+    initialize_dotenv()
+
+    # Initialize the RPC connection
+    rpc_connection = await initialize_rpc()
+
     update_interval_seconds = 60  # Update every 60 seconds
     uvicorn_config = Config(
-        "main:app",
+        app=app,
         host="0.0.0.0",
         port=UVICORN_PORT,
         loop="uvloop",
@@ -396,24 +439,20 @@ async def main():
     # Create the Uvicorn server
     server = Server(uvicorn_config)
 
-    # Register the shutdown event
-    server.on_shutdown = shutdown_event
-    
     # Create the periodic update task
     update_task = asyncio.create_task(periodic_update_task(rpc_connection, update_interval_seconds))
-    
+
     # Start the background task to update sync status
     sync_check_task = asyncio.create_task(update_sync_status_cache(rpc_connection))
 
     # Run the server
     await server.serve()
-        
+
     # Cancel the background tasks when the server is stopped
     update_task.cancel()
     sync_check_task.cancel()
     await asyncio.gather(update_task, sync_check_task, return_exceptions=True)
 
+
 if __name__ == "__main__":
     asyncio.run(main())
-
-
