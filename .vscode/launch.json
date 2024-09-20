@@ -3,10 +3,10 @@
     "configurations": [
         {
             "name": "Start FastAPI Server",
-            "type": "python",
+            "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/main.py",
-            "python": "${workspaceFolder}/venv/bin/python"
+            "python": "${workspaceFolder}/.venv/bin/python"
         }
     ]
 }

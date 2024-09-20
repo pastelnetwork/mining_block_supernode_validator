@@ -102,10 +102,17 @@ class ClientSessionManager:
             self.client_session = None
 
 session_manager = ClientSessionManager() # Initialize global session manager
-        
+
 def parse_mime_type(mime_type):
     return tuple(mime_type.split(';')[0].split('/'))
-        
+
+DEFAULT_RPC_PORTS = {
+    'mainnet': '9932',
+    'testnet': '19932',
+    'devnet': '29932',
+    'regtest': '18232'
+}
+
 def get_local_rpc_settings_func(directory_with_pastel_conf=os.path.expanduser("~/.pastel/")):
     with open(os.path.join(directory_with_pastel_conf, "pastel.conf"), 'r') as f:
         lines = f.readlines()
@@ -113,30 +120,40 @@ def get_local_rpc_settings_func(directory_with_pastel_conf=os.path.expanduser("~
     other_flags = {}
     rpchost = '127.0.0.1'
     rpcport = '19932'
+    rpcport_option = None
     rpcuser = 'default_user'
     rpcpassword = 'default_password'
-    genpastelid = None  # Initialize the genpastelid variable
     genpassphrase = None  # Initialize the genpassphrase variable
+    network_mode = None
+    
     for line in lines:
-        if '=' in line:  # Check if line contains '='
-            key, value = line.strip().split('=', 1)  # Split only once
-            value = value.strip()  # Strip whitespace from value
+        if '=' in line:
+            key, value = line.strip().split('=', 1)
+            key = key.strip()
+            value = value.strip()
             if key == 'rpcport':
-                rpcport = value
+                rpcport_option = value
             elif key == 'rpcuser':
                 rpcuser = value
             elif key == 'rpcpassword':
                 rpcpassword = value
             elif key == 'rpchost':
                 rpchost = value
-            elif key == 'genpastelid':  # Check for genpastelid
-                genpastelid = value
             elif key == 'genpassphrase':  # Check for genpassphrase
                 genpassphrase = value
             else:
                 other_flags[key] = value
-    # Return all extracted values including genpastelid and genpassphrase
-    return rpchost, rpcport, rpcuser, rpcpassword, genpastelid, genpassphrase, other_flags
+                if key in DEFAULT_RPC_PORTS and value == '1':
+                    network_mode = key
+
+    if network_mode is not None:
+        if rpcport_option is not None:
+            rpcport = rpcport_option
+        else:
+            rpcport = DEFAULT_RPC_PORTS[network_mode]
+
+    # Return all extracted values including genpassphrase
+    return rpchost, rpcport, rpcuser, rpcpassword, genpassphrase, other_flags
 
 def get_remote_rpc_settings_func():
     rpchost = '45.67.221.205'
@@ -280,13 +297,12 @@ async def currently_in_initial_sync_period() -> bool:
     try:
         expected_block_time_in_seconds = 2.5 * 60  # 2.5 minutes in seconds
         number_of_blocks_to_check = 20
-        blockchain_info = await rpc_connection.getblockchaininfo()
-        current_block_height = blockchain_info['blocks']
         timestamps = []
-        for block_num in range(current_block_height - number_of_blocks_to_check + 1, current_block_height + 1):
-            block_hash = await rpc_connection.getblockhash(block_num)
-            block_header = await rpc_connection.getblockheader(block_hash)
-            timestamps.append(block_header['time'])
+        current_block_height: int = await rpc_connection.getblockcount() # type: ignore
+        block_hashes = await rpc_connection.getblockhash(current_block_height - number_of_blocks_to_check, -1);
+        for block in block_hashes: # type: ignore
+            block_header = await rpc_connection.getblockheader(block['hash'])
+            timestamps.append(block_header['time']) # type: ignore
         intervals = [timestamps[i] - timestamps[i - 1] for i in range(1, len(timestamps))]
         mean_interval = sum(intervals) / len(intervals)
         return mean_interval < expected_block_time_in_seconds / 2
@@ -297,11 +313,9 @@ async def currently_in_initial_sync_period() -> bool:
 async def update_recent_block_hashes(rpc_connection, number_of_blocks=20):
     global recent_block_hashes
     try:
-        blockchain_info = await rpc_connection.getblockchaininfo()
-        current_block_height = blockchain_info['blocks']
-        for block_num in range(max(1, current_block_height - number_of_blocks + 1), current_block_height + 1):
-            block_hash = await rpc_connection.getblockhash(block_num)
-            recent_block_hashes[block_num] = block_hash
+        current_block_height = await rpc_connection.getblockcount()
+        block_hashes = await rpc_connection.getblockhash(current_block_height - number_of_blocks, number_of_blocks)
+        recent_block_hashes = { block['height']: block['hash'] for block in block_hashes }
     except Exception as e:
         logger.error(f"Error in update_recent_block_hashes: {e}")
 
@@ -313,8 +327,17 @@ async def check_for_chain_reorg(rpc_connection):
         if len(recent_block_hashes) < 20: # Check if we have enough data for the reorg check
             logger.info("Not enough data for reorg check, skipping.")
             return reorg_detected, reorg_depth
+        # find min height in recent_block_hashes
+        min_height = min(recent_block_hashes.keys())
+        block_hashes = await rpc_connection.getblockhash(min_height, -1)
+        if not isinstance(block_hashes, list) or len(block_hashes) == 0:
+            logger.error("getblockhash returned an empty or invalid response")
+            return False, 0
+        
+        new_block_hashes = { block['height']: block['hash'] for block in block_hashes }
+        # Iterate over the recent block hashes and compare with the current chain
         for height, stored_hash in recent_block_hashes.items():
-            current_hash = await rpc_connection.getblockhash(height)
+            current_hash = new_block_hashes.get(height)
             if current_hash != stored_hash:
                 reorg_detected = True
                 reorg_depth = max(reorg_depth, len(recent_block_hashes) - (height - min(recent_block_hashes.keys())))
@@ -382,11 +405,8 @@ async def get_current_pastel_block_height_func():
     if not fully_synced:
         logger.error(f"Blockchain is not fully synced! Reason: {reason_for_thinking_we_are_not_fully_synced}")
         return reason_for_thinking_we_are_not_fully_synced
-    else:
-        best_block_hash = await rpc_connection.getbestblockhash()
-        best_block_details = await rpc_connection.getblock(best_block_hash)
-        curent_block_height = best_block_details['height']
-        return curent_block_height
+    
+    return await rpc_connection.getblockcount()
 
 async def get_best_block_hash_and_merkle_root_func():
     global rpc_connection
@@ -394,10 +414,10 @@ async def get_best_block_hash_and_merkle_root_func():
     if not fully_synced:
         logger.error(f"Blockchain is not fully synced! Reason: {reason_for_thinking_we_are_not_fully_synced}")
         return reason_for_thinking_we_are_not_fully_synced, reason_for_thinking_we_are_not_fully_synced, reason_for_thinking_we_are_not_fully_synced
-    else:    
+    else:
         best_block_height = await get_current_pastel_block_height_func()
-        best_block_hash = await rpc_connection.getblockhash(best_block_height)
-        best_block_details = await rpc_connection.getblock(best_block_hash)
+        best_block_details = await rpc_connection.getblock(best_block_height)
+        best_block_hash = best_block_details['hash']
         best_block_merkle_root = best_block_details['merkleroot']
         return best_block_hash, best_block_merkle_root, best_block_height
 
@@ -729,10 +749,10 @@ def install_pasteld_func(network_name='testnet'):
         except Exception as e:
             logger.error(f"Error running pastelup install command! Message: {e}; Command result: {install_result}")
     return
-            
+
 
 #_______________________________________________________________
 
-
-rpc_host, rpc_port, rpc_user, rpc_password, genpastelid, genpassphrase, other_flags = get_local_rpc_settings_func()
+rpc_host, rpc_port, rpc_user, rpc_password, genpassphrase, other_flags = \
+    get_local_rpc_settings_func(os.path.expanduser('~/.pastel-devnet/'))
 rpc_connection = AsyncAuthServiceProxy(f"http://{rpc_user}:{rpc_password}@{rpc_host}:{rpc_port}")
