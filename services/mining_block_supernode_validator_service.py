@@ -125,7 +125,7 @@ def get_local_rpc_settings_func(directory_with_pastel_conf=os.path.expanduser("~
     rpcuser = 'default_user'
     rpcpassword = 'default_password'
     genpassphrase = None  # Initialize the genpassphrase variable
-    network_mode = None
+    network_mode = 'mainnet'
     
     for line in lines:
         if '=' in line:
@@ -763,5 +763,4 @@ async def initialize_rpc() -> Optional[AsyncAuthServiceProxy]:
         rpc_connection = AsyncAuthServiceProxy(f"http://{rpc_user}:{rpc_password}@{rpc_host}:{rpc_port}")
         return rpc_connection
     except Exception as e:
-        logger.error(f"Failed to initialize RPC connection: {e}")
-        return None
+        raise RuntimeError(f"Failed to initialize RPC connection: {e}")

@@ -8,6 +8,7 @@ from fastapi.responses import JSONResponse
 from contextlib import asynccontextmanager
 import uvloop
 import os
+import sys
 from uvicorn import Config, Server
 from decouple import Config as DecoupleConfig, RepositoryEnv
 from services.mining_block_supernode_validator_service import (
@@ -59,6 +60,22 @@ async def load_yaml(file_path):
     return yaml.safe_load(data)['all']
 
 
+async def validate_yaml_data(data):
+    if not isinstance(data, dict):
+        raise ValueError("YAML data is not a dictionary")
+    
+    for key, value in data.items():
+        if 'pastelid' not in value:
+            raise ValueError(f"Missing pastelid in YAML data for key '{key}'")
+        if 'pwd' not in value:
+            raise ValueError(f"Missing pwd in YAML data for key '{key}'")
+        if 'ip_address' not in value:
+            raise ValueError(f"Missing ip_address in YAML data for key '{key}'")
+        
+    logger.info("YAML data validated successfully")
+    return True
+
+
 async def update_supernode_eligibility():
     global rpc_connection
     global supernode_eligibility_cache
@@ -85,12 +102,17 @@ async def startup_event():
 
         filepath_to_pastelid_secrets = os.getenv('PASTELIDS_FILENAME', DEFAULT_PASTELIDS_FILENAME)
         pastelid_secrets_dict = await load_yaml(filepath_to_pastelid_secrets)
+        await validate_yaml_data(pastelid_secrets_dict)
         supernode_iterator = itertools.cycle(sorted(pastelid_secrets_dict.items(), key=lambda x: x[1]["pastelid"]))  # Initialize the round-robin iterator
     except (FileNotFoundError, yaml.YAMLError) as exc_dict_load:
         logger.error(f"Error loading YAML file: {exc_dict_load}")
-        pastelid_secrets_dict = {}
+        sys.exit(1)
+    except ValueError as exc_validate:
+        logger.error(f"Error validating YAML data: {exc_validate}")
+        sys.exit(1)
     except Exception as e:
         logger.error(f"Error during startup: {e}")
+        sys.exit(1)
 
 
 async def shutdown_event():
@@ -421,29 +443,33 @@ async def check_if_blockchain_is_fully_synced_endpoint(token: str = Depends(veri
 
 async def main():
     global rpc_connection
-    
-    # initialize environment variables
-    initialize_dotenv()
 
-    # Initialize the RPC connection
-    rpc_connection = await initialize_rpc()
+    try:    
+        # initialize environment variables
+        initialize_dotenv()
 
-    update_interval_seconds = 60  # Update every 60 seconds
-    uvicorn_config = Config(
-        app=app,
-        host="0.0.0.0",
-        port=UVICORN_PORT,
-        loop="uvloop",
-    )
+        # Initialize the RPC connection
+        rpc_connection = await initialize_rpc()
 
-    # Create the Uvicorn server
-    server = Server(uvicorn_config)
+        update_interval_seconds = 60  # Update every 60 seconds
+        uvicorn_config = Config(
+            app=app,
+            host="0.0.0.0",
+            port=UVICORN_PORT,
+            loop="uvloop",
+        )
 
-    # Create the periodic update task
-    update_task = asyncio.create_task(periodic_update_task(rpc_connection, update_interval_seconds))
+        # Create the Uvicorn server
+        server = Server(uvicorn_config)
 
-    # Start the background task to update sync status
-    sync_check_task = asyncio.create_task(update_sync_status_cache(rpc_connection))
+        # Create the periodic update task
+        update_task = asyncio.create_task(periodic_update_task(rpc_connection, update_interval_seconds))
+
+        # Start the background task to update sync status
+        sync_check_task = asyncio.create_task(update_sync_status_cache(rpc_connection))
+    except Exception as e:
+        logger.error(f"Error during initialization: {e}")
+        return
 
     # Run the server
     await server.serve()
