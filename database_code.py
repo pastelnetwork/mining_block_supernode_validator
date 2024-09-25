@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker, declarative_base
 from decouple import Config as DecoupleConfig
 from pydantic import BaseModel
-from typing import List, Optional
+from typing import Optional, Dict
 
 config = DecoupleConfig(".env")
 DATABASE_URL_FOR_SQLITE = config.get("DATABASE_URL_FOR_SQLITE", cast=str, default="sqlite+aiosqlite:///pastel_mining_block_supernode_validator_api.sqlite")
@@ -34,7 +34,7 @@ class SignedPayloadResponse(BaseModel):
     requesting_machine_ip_address: str
 
     @classmethod
-    def from_orm(cls, model: SignedPayload):
+    def model_validate(cls, model: SignedPayload):
         """
         Convert SignedPayload ORM model to Pydantic model.
         """
@@ -49,15 +49,19 @@ class SignedPayloadResponse(BaseModel):
             requesting_machine_ip_address=model.requesting_machine_ip_address
         )
 
+    class Config:
+        from_attributes = True  # Allow reading attributes from ORM objects
+
 class BlockHeaderValidationInfo(BaseModel):
     supernode_pastelid_pubkey: str
     supernode_signature: str
 
 class SupernodeEligibilityResponse(BaseModel):
     is_eligible: bool
-    signing_data: List[dict]
     current_block_height: int
-    current_number_of_enabled_supernodes: int
+    current_number_of_registered_supernodes: int
+    current_number_of_mining_enabled_supernodes: int
+    current_number_of_eligible_supernodes: int
     last_signed_block_height: Optional[int] = None
     last_signed_block_hash: Optional[str] = None
     blocks_since_last_signed: Optional[int] = None
@@ -69,6 +73,29 @@ class SignPayloadResponse(BaseModel):
     signature: str
     utc_timestamp: str
     
+class SignaturePack(Base):
+    __tablename__ = 'signature_packs'
+    id = Column(Integer, primary_key=True, index=True)
+    best_block_height = Column(Integer)
+    best_block_hash = Column(String)
+    best_block_merkle_root = Column(String)
+    requesting_machine_ip_address = Column(String)
+    signatures = Column(JSON)  # Storing JSON directly; ensure your DB supports JSON columns    
+    
+class SignatureDetails(BaseModel):
+    signature: str
+    utc_timestamp: datetime
+
+class SignaturePackResponse(BaseModel):
+    best_block_height: int
+    best_block_hash: str
+    best_block_merkle_root: str
+    requesting_machine_ip_address: str
+    signatures: Dict[str, SignatureDetails]
+
+    class Config:
+        from_attributes = True  # This enables the model to work with ORM objects
+            
 def to_serializable(val):
     if isinstance(val, datetime):
         return val.isoformat()

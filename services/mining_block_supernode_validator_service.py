@@ -7,6 +7,7 @@ import hashlib
 import ipaddress
 import json
 import os
+import math
 import platform
 import statistics
 import time
@@ -14,9 +15,11 @@ import warnings
 from datetime import datetime, timedelta
 from typing import Optional
 import dirtyjson
+import numpy as np
 import pandas as pd
 import psutil
 from httpx import AsyncClient, Limits, Timeout
+from dotenv import load_dotenv
 
 try:
     import urllib.parse as urlparse
@@ -90,7 +93,7 @@ class ClientSessionManager:
         return await self.create_session()
 
     async def create_session(self) -> aiohttp.ClientSession:
-        connector = aiohttp.TCPConnector(limit=1000)
+        connector = aiohttp.TCPConnector(limit=10000)
         self.client_session = aiohttp.ClientSession(connector=connector)
         return self.client_session
 
@@ -100,36 +103,59 @@ class ClientSessionManager:
             self.client_session = None
 
 session_manager = ClientSessionManager() # Initialize global session manager
-        
+
 def parse_mime_type(mime_type):
     return tuple(mime_type.split(';')[0].split('/'))
-        
+
+DEFAULT_RPC_PORTS = {
+    'mainnet': '9932',
+    'testnet': '19932',
+    'devnet': '29932',
+    'regtest': '18232'
+}
+
 def get_local_rpc_settings_func(directory_with_pastel_conf=os.path.expanduser("~/.pastel/")):
     with open(os.path.join(directory_with_pastel_conf, "pastel.conf"), 'r') as f:
         lines = f.readlines()
+    # Initialize variables
     other_flags = {}
     rpchost = '127.0.0.1'
     rpcport = '19932'
-    for line in lines:
-        if line.startswith('rpcport'):
-            value = line.split('=')[1]
-            rpcport = value.strip()
-        elif line.startswith('rpcuser'):
-            value = line.split('=')[1]
-            rpcuser = value.strip()
-        elif line.startswith('rpcpassword'):
-            value = line.split('=')[1]
-            rpcpassword = value.strip()
-        elif line.startswith('rpchost'):
-            pass
-        elif line == '\n':
-            pass
-        else:
-            current_flag = line.strip().split('=')[0].strip()
-            current_value = line.strip().split('=')[1].strip()
-            other_flags[current_flag] = current_value
-    return rpchost, rpcport, rpcuser, rpcpassword, other_flags
+    rpcport_option = None
+    rpcuser = 'default_user'
+    rpcpassword = 'default_password'
+    genpassphrase = None  # Initialize the genpassphrase variable
+    network_mode = 'mainnet'
     
+    for line in lines:
+        if '=' in line:
+            key, value = line.strip().split('=', 1)
+            key = key.strip()
+            value = value.strip()
+            if key == 'rpcport':
+                rpcport_option = value
+            elif key == 'rpcuser':
+                rpcuser = value
+            elif key == 'rpcpassword':
+                rpcpassword = value
+            elif key == 'rpchost':
+                rpchost = value
+            elif key == 'genpassphrase':  # Check for genpassphrase
+                genpassphrase = value
+            else:
+                other_flags[key] = value
+                if key in DEFAULT_RPC_PORTS and value == '1':
+                    network_mode = key
+
+    if network_mode is not None:
+        if rpcport_option is not None:
+            rpcport = rpcport_option
+        else:
+            rpcport = DEFAULT_RPC_PORTS[network_mode]
+
+    # Return all extracted values including genpassphrase
+    return rpchost, rpcport, rpcuser, rpcpassword, genpassphrase, other_flags
+
 def get_remote_rpc_settings_func():
     rpchost = '45.67.221.205'
     #rpchost = '209.145.54.164'
@@ -159,13 +185,22 @@ class JSONRPCException(Exception):
 
 def EncodeDecimal(o):
     if isinstance(o, decimal.Decimal):
-        return float(round(o, 8))
-    raise TypeError(repr(o) + " is not JSON serializable")
+        return float(o)
+    elif isinstance(o, np.integer):
+        return int(o)  # Convert numpy integers to Python int
+    elif isinstance(o, np.floating):
+        return float(o)  # Convert numpy floats to Python float
+    elif isinstance(o, np.ndarray):
+        return o.tolist()  # Convert numpy arrays to list
+    elif isinstance(o, (int, float, str, bool, list, dict, type(None))):
+        return o  # These types are already JSON serializable
+    else:
+        raise TypeError(f"Object of type {type(o).__name__} is not JSON serializable")
     
 class AsyncAuthServiceProxy:
     max_concurrent_requests = 5000
     _semaphore = asyncio.BoundedSemaphore(max_concurrent_requests)
-    def __init__(self, service_url, service_name=None, reconnect_timeout=15, reconnect_amount=2, request_timeout=20):
+    def __init__(self, service_url, service_name=None, reconnect_timeout=15, reconnect_amount=2, request_timeout=30):
         self.service_url = service_url
         self.service_name = service_name
         self.url = urlparse.urlparse(service_url)        
@@ -257,19 +292,18 @@ async def check_pending_transactions_pool(rpc_connection):
     mempool_info = await rpc_connection.getmempoolinfo()
     # Assuming a mempool size of 1000 transactions is reasonable
     return mempool_info['size'] < 1000
-        
-async def currently_in_initial_sync_period() -> bool:
-    global rpc_connection
+
+
+async def currently_in_initial_sync_period(rpc_connection) -> bool:
     try:
         expected_block_time_in_seconds = 2.5 * 60  # 2.5 minutes in seconds
         number_of_blocks_to_check = 20
-        blockchain_info = await rpc_connection.getblockchaininfo()
-        current_block_height = blockchain_info['blocks']
         timestamps = []
-        for block_num in range(current_block_height - number_of_blocks_to_check + 1, current_block_height + 1):
-            block_hash = await rpc_connection.getblockhash(block_num)
-            block_header = await rpc_connection.getblockheader(block_hash)
-            timestamps.append(block_header['time'])
+        current_block_height: int = await rpc_connection.getblockcount() # type: ignore
+        block_hashes = await rpc_connection.getblockhash(current_block_height - number_of_blocks_to_check, -1);
+        for block in block_hashes: # type: ignore
+            block_header = await rpc_connection.getblockheader(block['hash'])
+            timestamps.append(block_header['time']) # type: ignore
         intervals = [timestamps[i] - timestamps[i - 1] for i in range(1, len(timestamps))]
         mean_interval = sum(intervals) / len(intervals)
         return mean_interval < expected_block_time_in_seconds / 2
@@ -277,16 +311,16 @@ async def currently_in_initial_sync_period() -> bool:
         logger.error(f"Error in currently_in_initial_sync_period: {e}")
         return False
 
+
 async def update_recent_block_hashes(rpc_connection, number_of_blocks=20):
     global recent_block_hashes
     try:
-        blockchain_info = await rpc_connection.getblockchaininfo()
-        current_block_height = blockchain_info['blocks']
-        for block_num in range(max(1, current_block_height - number_of_blocks + 1), current_block_height + 1):
-            block_hash = await rpc_connection.getblockhash(block_num)
-            recent_block_hashes[block_num] = block_hash
+        current_block_height = await rpc_connection.getblockcount()
+        block_hashes = await rpc_connection.getblockhash(current_block_height - number_of_blocks, number_of_blocks)
+        recent_block_hashes = { block['height']: block['hash'] for block in block_hashes }
     except Exception as e:
         logger.error(f"Error in update_recent_block_hashes: {e}")
+
 
 async def check_for_chain_reorg(rpc_connection):
     global recent_block_hashes
@@ -296,8 +330,17 @@ async def check_for_chain_reorg(rpc_connection):
         if len(recent_block_hashes) < 20: # Check if we have enough data for the reorg check
             logger.info("Not enough data for reorg check, skipping.")
             return reorg_detected, reorg_depth
+        # find min height in recent_block_hashes
+        min_height = min(recent_block_hashes.keys())
+        block_hashes = await rpc_connection.getblockhash(min_height, -1)
+        if not isinstance(block_hashes, list) or len(block_hashes) == 0:
+            logger.error("getblockhash returned an empty or invalid response")
+            return False, 0
+        
+        new_block_hashes = { block['height']: block['hash'] for block in block_hashes }
+        # Iterate over the recent block hashes and compare with the current chain
         for height, stored_hash in recent_block_hashes.items():
-            current_hash = await rpc_connection.getblockhash(height)
+            current_hash = new_block_hashes.get(height)
             if current_hash != stored_hash:
                 reorg_detected = True
                 reorg_depth = max(reorg_depth, len(recent_block_hashes) - (height - min(recent_block_hashes.keys())))
@@ -312,18 +355,17 @@ async def periodic_update_task(rpc_connection, update_interval=60):
         await update_recent_block_hashes(rpc_connection)
         await asyncio.sleep(update_interval)
     
-async def check_if_blockchain_is_fully_synced(use_optional_checks = 0) -> (bool, str):
+async def check_if_blockchain_is_fully_synced(rpc_connection, use_optional_checks = 0) -> (bool, str):
     expected_block_time_in_seconds = 2.5 * 60
     number_of_past_minutes_to_check_for_new_block = 15
     reason_for_thinking_we_are_not_fully_synced = ''
-    global rpc_connection
     try:
         blockchain_info = await rpc_connection.getblockchaininfo()
         # Check the verification progress to determine if the node is almost or fully synced
         if blockchain_info['verificationprogress'] < 0.999:  # Adjust this threshold as needed
             reason_for_thinking_we_are_not_fully_synced += 'Blockchain verification in progress. '
         # Check if Pasteld is in the initial sync period
-        if await currently_in_initial_sync_period():
+        if await currently_in_initial_sync_period(rpc_connection):
             reason_for_thinking_we_are_not_fully_synced += 'Pasteld is in initial sync period. '
         # Check if there are new blocks in a reasonable time; Get the latest block's timestamp and compare it with the current system time:
         latest_block_hash = blockchain_info['bestblockhash']
@@ -359,69 +401,71 @@ async def check_if_blockchain_is_fully_synced(use_optional_checks = 0) -> (bool,
         logger.error(f"Error in check_if_blockchain_is_fully_synced: {e}")
         return False, f"Error encountered: {e}"
 
-async def get_current_pastel_block_height_func():
-    global rpc_connection
+
+async def get_current_pastel_block_height_func(rpc_connection):
     fully_synced, reason_for_thinking_we_are_not_fully_synced = is_blockchain_fully_synced()
     if not fully_synced:
         logger.error(f"Blockchain is not fully synced! Reason: {reason_for_thinking_we_are_not_fully_synced}")
         return reason_for_thinking_we_are_not_fully_synced
-    else:
-        best_block_hash = await rpc_connection.getbestblockhash()
-        best_block_details = await rpc_connection.getblock(best_block_hash)
-        curent_block_height = best_block_details['height']
-        return curent_block_height
+    
+    return await rpc_connection.getblockcount()
 
-async def get_previous_block_hash_and_merkle_root_func():
-    global rpc_connection
+async def get_best_block_hash_and_merkle_root_func(rpc_connection):
     fully_synced, reason_for_thinking_we_are_not_fully_synced = is_blockchain_fully_synced()
     if not fully_synced:
         logger.error(f"Blockchain is not fully synced! Reason: {reason_for_thinking_we_are_not_fully_synced}")
         return reason_for_thinking_we_are_not_fully_synced, reason_for_thinking_we_are_not_fully_synced, reason_for_thinking_we_are_not_fully_synced
-    else:    
-        previous_block_height = await get_current_pastel_block_height_func()
-        previous_block_hash = await rpc_connection.getblockhash(previous_block_height)
-        previous_block_details = await rpc_connection.getblock(previous_block_hash)
-        previous_block_merkle_root = previous_block_details['merkleroot']
-        return previous_block_hash, previous_block_merkle_root, previous_block_height
+    else:
+        best_block_height = await get_current_pastel_block_height_func(rpc_connection)
+        best_block_details = await rpc_connection.getblock(best_block_height)
+        best_block_hash = best_block_details['hash']
+        best_block_merkle_root = best_block_details['merkleroot']
+        return best_block_hash, best_block_merkle_root, best_block_height
 
-async def get_last_block_data_func():
-    global rpc_connection
+async def get_last_block_data_func(rpc_connection):
     fully_synced, reason_for_thinking_we_are_not_fully_synced = is_blockchain_fully_synced()
     if not fully_synced:
         logger.error(f"Blockchain is not fully synced! Reason: {reason_for_thinking_we_are_not_fully_synced}")
         return reason_for_thinking_we_are_not_fully_synced
     else:      
-        current_block_height = await get_current_pastel_block_height_func()
+        current_block_height = await get_current_pastel_block_height_func(rpc_connection)
         block_data = await rpc_connection.getblock(str(current_block_height))
         return block_data
 
-async def check_psl_address_balance_func(address_to_check):
-    global rpc_connection
-    balance_at_address = await rpc_connection.z_getbalance(address_to_check) 
+
+async def check_psl_address_balance_func(rpc_connection, address_to_check):
+    balance_at_address = await rpc_connection.z_getbalance(address_to_check)
     return balance_at_address
 
-async def get_raw_transaction_func(txid):
-    global rpc_connection
+
+async def get_raw_transaction_func(rpc_connection, txid):
     raw_transaction_data = await rpc_connection.getrawtransaction(txid, 1) 
     return raw_transaction_data
-        
-async def sign_message_with_pastelid_func(pastelid, message_to_sign, passphrase) -> str:
-    global rpc_connection
+
+
+async def sign_message_with_pastelid_func(rpc_connection, pastelid, message_to_sign, passphrase) -> str:
     results_dict = await rpc_connection.pastelid('sign', message_to_sign, pastelid, passphrase, 'ed448')
     return results_dict['signature']
 
-async def verify_message_with_pastelid_func(pastelid, message_to_verify, pastelid_signature_on_message) -> str:
-    global rpc_connection
+
+async def sign_base64_encoded_message_with_pastelid_func(rpc_connection, pastelid, base64_message_to_sign, passphrase) -> str:
+    results_dict = await rpc_connection.pastelid('sign-base64-encoded', base64_message_to_sign, pastelid, passphrase, 'ed448')
+    return results_dict['signature']
+
+async def verify_message_with_pastelid_func(rpc_connection, pastelid, message_to_verify, pastelid_signature_on_message) -> str:
     verification_result = await rpc_connection.pastelid('verify', message_to_verify, pastelid_signature_on_message, pastelid, 'ed448')
     return verification_result['verification']
 
-async def check_masternode_top_func():
-    global rpc_connection
+
+async def verify_base64_encoded_message_with_pastelid_func(rpc_connection, pastelid, message_to_verify, pastelid_signature_on_message) -> str:
+    verification_result = await rpc_connection.pastelid('verify-base64-encoded', message_to_verify, pastelid_signature_on_message, pastelid, 'ed448')
+    return verification_result['verification']
+
+async def check_masternode_top_func(rpc_connection):
     masternode_top_command_output = await rpc_connection.masternode('top')
     return masternode_top_command_output
 
-async def check_supernode_list_func():
-    global rpc_connection
+async def check_supernode_list_func(rpc_connection):
     masternode_list_full_command_output = await rpc_connection.masternodelist('full')
     masternode_list_rank_command_output = await rpc_connection.masternodelist('rank')
     masternode_list_pubkey_command_output = await rpc_connection.masternodelist('pubkey')
@@ -442,6 +486,7 @@ async def check_supernode_list_func():
             masternode_list_full_df.loc[current_row[0], 'extAddress'] = current_extra['extAddress']
             masternode_list_full_df.loc[current_row[0], 'extP2P'] = current_extra['extP2P']
             masternode_list_full_df.loc[current_row[0], 'extKey'] = current_extra['extKey']
+            masternode_list_full_df.loc[current_row[0], 'eligibleForMining'] = current_extra['eligibleForMining']
     masternode_list_full_df['lastseentime'] = pd.to_datetime(masternode_list_full_df['lastseentime'], unit='s')
     masternode_list_full_df['lastpaidtime'] = pd.to_datetime(masternode_list_full_df['lastpaidtime'], unit='s')
     masternode_list_full_df['activeseconds'] = masternode_list_full_df['activeseconds'].astype(int)
@@ -450,10 +495,11 @@ async def check_supernode_list_func():
     masternode_list_full_df['rank'] = masternode_list_full_df['rank'].astype(int)
     masternode_list_full_df__json = masternode_list_full_df.to_json(orient='index')
     return masternode_list_full_df__json
-    
-async def get_local_machine_supernode_data_func():
+
+
+async def get_local_machine_supernode_data_func(rpc_connection):
     local_machine_ip = get_external_ip_func()
-    supernode_list_full_df = await check_supernode_list_func()
+    supernode_list_full_df = await check_supernode_list_func(rpc_connection)
     proper_port_number = statistics.mode([x.split(':')[1] for x in supernode_list_full_df['ipaddress:port'].values.tolist()])
     local_machine_ip_with_proper_port = local_machine_ip + ':' + proper_port_number
     local_machine_supernode_data = supernode_list_full_df[supernode_list_full_df['ipaddress:port'] == local_machine_ip_with_proper_port]
@@ -466,8 +512,9 @@ async def get_local_machine_supernode_data_func():
         local_sn_pastelid = local_machine_supernode_data['extKey'].values[0]
     return local_machine_supernode_data, local_sn_rank, local_sn_pastelid, local_machine_ip_with_proper_port
 
-async def get_sn_data_from_pastelid_func(specified_pastelid):
-    supernode_list_full_df = await check_supernode_list_func()
+
+async def get_sn_data_from_pastelid_func(rpc_connection, specified_pastelid):
+    supernode_list_full_df = await check_supernode_list_func(rpc_connection)
     specified_machine_supernode_data = supernode_list_full_df[supernode_list_full_df['extKey'] == specified_pastelid]
     if len(specified_machine_supernode_data) == 0:
         logger.error('Specified machine is not a supernode!')
@@ -475,8 +522,9 @@ async def get_sn_data_from_pastelid_func(specified_pastelid):
     else:
         return specified_machine_supernode_data
 
-async def get_sn_data_from_sn_pubkey_func(specified_sn_pubkey):
-    supernode_list_full_df = await check_supernode_list_func()
+
+async def get_sn_data_from_sn_pubkey_func(rpc_connection, specified_sn_pubkey):
+    supernode_list_full_df = await check_supernode_list_func(rpc_connection)
     specified_machine_supernode_data = supernode_list_full_df[supernode_list_full_df['pubkey'] == specified_sn_pubkey]
     if len(specified_machine_supernode_data) == 0:
         logger.error('Specified machine is not a supernode!')
@@ -504,10 +552,11 @@ def safe_json_loads_func(json_string: str) -> dict:
         return loaded_json
     except Exception as e:
         logger.error(f"Encountered an error while trying to parse json_string: {e}")
-        loaded_json = dirtyjson.loads(json_string.replace('\\"', '"').replace('\/', '/').replace('\\n', ' '))
+        # Removed the unnecessary replacement of '\/' with '/'
+        loaded_json = dirtyjson.loads(json_string.replace('\\"', '"').replace('\\n', ' '))
         return loaded_json
 
-async def get_block_data(block_height_or_hash):
+async def get_block_data(rpc_connection, block_height_or_hash):
     global block_data_cache
     if block_height_or_hash in block_data_cache:  # Check if data is in cache
         return block_data_cache[block_height_or_hash]
@@ -538,33 +587,17 @@ def decode_compact_size(data, offset):
         size = int.from_bytes(data[offset + 1:offset + 9], byteorder='little') # Next eight bytes are the size
         return size, 9  # Size is next eight bytes, 9 bytes consumed
     
-def extract_pastelid_and_signature(block_header, start_position):
-    pastel_id_length, bytes_consumed = decode_compact_size(block_header, start_position) # Extracting PastelID (a serialized std::string with variable-length size prefix)
-    start_position += bytes_consumed
-    supernode_pastelid_pubkey = block_header[start_position:start_position + pastel_id_length]
-    start_position += pastel_id_length
-    signature_length, bytes_consumed = decode_compact_size(block_header, start_position) # Extracting prevMerkleRootSignature (a serialized vector of bytes with variable-length size prefix)
-    start_position += bytes_consumed
-    supernode_signature = block_header[start_position:start_position + signature_length]
-    return supernode_pastelid_pubkey, supernode_signature    
-
-async def check_block_header_for_supernode_validation_info(block_height_or_hash):
-    global rpc_connection
+async def check_block_header_for_supernode_validation_info(rpc_connection, block_height_or_hash):
     try: # Determine if the input is a block height (integer) or a block hash (string)
         if isinstance(block_height_or_hash, int) or (isinstance(block_height_or_hash, str) and block_height_or_hash.isdigit()):
             block_height = int(block_height_or_hash)  # Input is a block height
             block_hash = await rpc_connection.getblockhash(block_height)
         else:
             block_hash = block_height_or_hash  # Input is assumed to be a block hash
-        block_header = await get_block_data(block_hash)  # Use caching function to fetch the block header
-        if len(block_header) > 140: # Check and parse the block header based on its length
-            start_of_extra_data = find_start_of_extra_data(block_header) # Parse the variable length encoding to find the start of PastelID and signature
-            extra_data = block_header[start_of_extra_data:].decode('utf-8') # Extract and decode the PastelID and signature
-            parts = extra_data.split('|')
-            if len(parts) == 2:
-                supernode_pastelid_pubkey, supernode_signature = parts
-            else:
-                supernode_pastelid_pubkey, supernode_signature = extract_pastelid_and_signature(extra_data)
+        block_header = await get_block_data(rpc_connection, block_hash)  # Use caching function to fetch the block header
+        if 'pastelid' in block_header: # Check if the block header contains the PastelID and signature
+            supernode_pastelid_pubkey = block_header['pastelid']
+            supernode_signature = block_header['prevMerkleRootSignature']
             return supernode_pastelid_pubkey, supernode_signature
         else:
             return "", ""
@@ -572,33 +605,29 @@ async def check_block_header_for_supernode_validation_info(block_height_or_hash)
         logger.error(f"Error in check_block_header_for_supernode_validation_info: {e}")
         return "", ""
 
-async def check_if_supernode_is_eligible_to_sign_block(supernode_pastelid_pubkey):
-    # Get the supernode list
-    supernode_list_json = await check_supernode_list_func()
-    supernode_list_df = pd.read_json(supernode_list_json, orient='index')
-    # Count the number of ENABLED supernodes
-    enabled_supernodes = supernode_list_df[supernode_list_df['supernode_status'] == 'ENABLED']
-    current_number_of_enabled_supernodes = len(enabled_supernodes)
-    # Initialize a list to store results
-    signing_data_list = []
-    # Fetch current block height
-    current_block_height = await get_current_pastel_block_height_func()
+
+async def check_if_supernode_is_eligible_to_sign_block(rpc_connection, supernode_pastelid_pubkey):
+    masternode_list_full = await check_supernode_list_func(rpc_connection)
+    masternode_list_full_df = pd.DataFrame(safe_json_loads_func(masternode_list_full))
+    total_number_of_supernodes = len(masternode_list_full_df)
+    getminingeligibility_command_output = await rpc_connection.getminingeligibility()
+    getminingeligibility_df = pd.DataFrame(getminingeligibility_command_output['nodes'])
+    total_number_of_mining_enabled_supernodes = getminingeligibility_command_output['miningEnabledCount']
+    eligible_supernodes_df = getminingeligibility_df[getminingeligibility_df['eligible'] == True]
+    total_number_of_currently_eligible_supernodes = len(eligible_supernodes_df)
+    lookback_period_in_blocks = math.ceil(total_number_of_mining_enabled_supernodes*.75)
+    signing_data_list = [] # Initialize a list to store results
+    current_block_height = getminingeligibility_command_output['height']
     # Iterate over the past 'current_number_of_enabled_supernodes' blocks
-    while isinstance(current_block_height, str):
-        logger.info('Problem fetching current block height, trying again in 10 seconds...')
-        asyncio.sleep(10)
-        current_block_height = await get_current_pastel_block_height_func()
-    for height in range(current_block_height - current_number_of_enabled_supernodes, current_block_height):
-        pubkey, signature = await check_block_header_for_supernode_validation_info(height)
+    for height in range(current_block_height - lookback_period_in_blocks, current_block_height):
+        pubkey, signature = await check_block_header_for_supernode_validation_info(rpc_connection, height)
         signing_data_list.append({'block_height': height, 'supernode_pastelid_pubkey': pubkey, 'supernode_signature': signature})
     # Convert the list to DataFrame
     signing_data = pd.DataFrame(signing_data_list)
     # Check if the provided pubkey has signed any of the past blocks
-    is_eligible = supernode_pastelid_pubkey in signing_data['supernode_pastelid_pubkey'].values
+    is_eligible = supernode_pastelid_pubkey in eligible_supernodes_df['mnid'].values
     # Convert DataFrame to a list of dictionaries
     signing_data_list = signing_data.to_dict(orient='records')
-    # Check if the provided pubkey has signed any of the past blocks
-    is_eligible = supernode_pastelid_pubkey not in signing_data['supernode_pastelid_pubkey'].values
     # Find the last block signed by the supernode
     last_signed = signing_data[signing_data['supernode_pastelid_pubkey'] == supernode_pastelid_pubkey].tail(1)
     last_signed_block_height = last_signed['block_height'].iloc[0] if not last_signed.empty else 0
@@ -606,19 +635,19 @@ async def check_if_supernode_is_eligible_to_sign_block(supernode_pastelid_pubkey
     # Calculate blocks_since_last_signed
     blocks_since_last_signed = current_block_height - last_signed_block_height if last_signed_block_height > 0 else 0
     # Calculate supernode_is_eligible_again_in_n_blocks
-    blocks_until_eligibility_restored  = current_number_of_enabled_supernodes - blocks_since_last_signed if not is_eligible else 0
+    blocks_until_eligibility_restored = math.ceil(total_number_of_mining_enabled_supernodes*0.75) - blocks_since_last_signed if not is_eligible else 0
     # Prepare the response
     return {
         "is_eligible": is_eligible,
-        "signing_data": signing_data_list,
         "current_block_height": current_block_height,
-        "current_number_of_enabled_supernodes": current_number_of_enabled_supernodes,
+        "current_number_of_registered_supernodes": total_number_of_supernodes,
+        "current_number_of_mining_enabled_supernodes": total_number_of_mining_enabled_supernodes,
+        "current_number_of_eligible_supernodes": total_number_of_currently_eligible_supernodes,
         "last_signed_block_height": last_signed_block_height,
         "last_signed_block_hash": last_signed_block_hash,
         "blocks_since_last_signed": blocks_since_last_signed,
-        "blocks_until_eligibility_restored ": blocks_until_eligibility_restored 
-    }    
-    
+        "blocks_until_eligibility_restored": blocks_until_eligibility_restored
+    } 
     
 #Misc helper functions:
 class MyTimer():
@@ -671,10 +700,10 @@ def get_external_ip_func():
     return ip_address
 
 
-async def check_if_pasteld_is_running_correctly_and_relaunch_if_required_func():
+async def check_if_pasteld_is_running_correctly_and_relaunch_if_required_func(rpc_connection):
     pasteld_running_correctly = 0
     try:
-        current_pastel_block_number = await get_current_pastel_block_height_func()
+        current_pastel_block_number = await get_current_pastel_block_height_func(rpc_connection)
     except Exception as e:
         logger.error(f"Problem running pastel-cli command: {e}")
         current_pastel_block_number = ''
@@ -719,10 +748,19 @@ def install_pasteld_func(network_name='testnet'):
         except Exception as e:
             logger.error(f"Error running pastelup install command! Message: {e}; Command result: {install_result}")
     return
-            
 
-#_______________________________________________________________
+def initialize_dotenv():
+    # Load the environment variables from the .env file
+    load_dotenv()
 
 
-rpc_host, rpc_port, rpc_user, rpc_password, other_flags = get_local_rpc_settings_func()
-rpc_connection = AsyncAuthServiceProxy(f"http://{rpc_user}:{rpc_password}@{rpc_host}:{rpc_port}")
+async def initialize_rpc() -> Optional[AsyncAuthServiceProxy]:
+    PASTELD_PATH = os.getenv('PASTELD_PATH', '~/.pastel')
+
+    try:
+        rpc_host, rpc_port, rpc_user, rpc_password, genpassphrase, other_flags = \
+            get_local_rpc_settings_func(os.path.expanduser(PASTELD_PATH))
+        rpc_connection = AsyncAuthServiceProxy(f"http://{rpc_user}:{rpc_password}@{rpc_host}:{rpc_port}")
+        return rpc_connection
+    except Exception as e:
+        raise RuntimeError(f"Failed to initialize RPC connection: {e}")
