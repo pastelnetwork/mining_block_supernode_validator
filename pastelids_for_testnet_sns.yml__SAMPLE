@@ -1,21 +1,14 @@
 all:
-  SuperNode01:
-    col_address: tPX7gmMjErHz8rMySTn7J1xXiygsRS5jijX
-    col_address_pkey: 123
-    ind: 0
-    other_address: tPWnxyRQ2DZw1TDx1RYGX1y9XpNB4EPDzdC
-    other_address_pkey: 123
-    pastelid: jXZ6VsP7LkNJE7oSrNRbvYfUHVLFySKeGyDUrTign84UURDohKDXcr49cRRG7fw8gjRxbtLL8ReGHgjfmv7z9y
-    pkey: 123
+  Supernode01:
+    pastelid: jXY3YYfPaUnzqndfcFGvHHx898LNfu85DVk8Z8Uj3SweRP2Q1BQ5v7dZAcgwpna6NsqK3YZwim58v3NuW5Pu3u
     pwd: passphrase123
-    txid: 76a9143e03ee6eb0ac37b9e313fade8932b9f9a69e70ce88ac
-  SuperNode02:
-    col_address: tPd5qgTjpdJQS48NTPmvG6qYwRch64RFxeF
-    col_address_pkey: 123
-    ind: 2
-    other_address: tPm8AvT1uSfChTczUUxQarnwyKy74xzLopC
-    other_address_pkey: 123
-    pastelid: jXYs3T1PEe8mNdcLThm3TnVQvzhAxEKdi7gTG2x9EdSfqViwaF3E8T4utvv5LXB9JT7oD1roW4FZVvDp5eDXaM
-    pkey: 123
-    pwd: passphrase123
-    txid: 76a9147f7b4be7dd0f12d11f3fe58aee4360a0b8bd75a088ac
+    collateral_address: tPX7gmMjErHz8rMySTn7J1xXiygsRS5jijX
+    txid_and_vout: 7ad0c4edd529670859d9e1f7c9692255d550de2a30acf6b4d38464e443c6ca68-0
+    ip_address: 154.12.243.255
+
+  Supernode02:
+    pastelid: jXa2JtL6kaFdoLwnqwHJX11dRix9o8fJSKxjm9t8wpKg27PDDEiSNcBNFWXMnaWL11j9BciHYZxmmCzYBAb3tv
+    pwd: passphrase123  
+    collateral_address: tPX7gmMjErHz8rMySTn7J1xXiygsRS5jijX
+    txid_and_vout: 7ad0c4edd529670859d9e1f7c9692255d550de2a30acf6b4d38464e443c6ca68-1
+    ip_address: 154.38.164.255
